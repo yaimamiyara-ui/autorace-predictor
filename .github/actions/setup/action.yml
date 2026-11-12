@@ -1,0 +1,23 @@
+name: setup
+description: Python・依存パッケージ・rcloneの準備（共通）
+inputs:
+  rclone_config:
+    description: rclone.conf の中身
+    required: true
+runs:
+  using: composite
+  steps:
+    - uses: actions/setup-python@v5
+      with:
+        python-version: "3.11"
+        cache: "pip"
+    - shell: bash
+      run: pip install -q -r requirements.txt
+    - shell: bash
+      env:
+        RCLONE_CONFIG_CONTENT: ${{ inputs.rclone_config }}
+      run: |
+        curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+        mkdir -p ~/.config/rclone
+        printf "%s\n" "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+        chmod 600 ~/.config/rclone/rclone.conf

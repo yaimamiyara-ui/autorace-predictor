@@ -1,7 +1,5 @@
 name: probe
 on:
-  push:
-    paths: ["autorace/**", ".github/workflows/probe.yml"]
   workflow_dispatch:
 concurrency: { group: autorace-fetch, cancel-in-progress: false }
 jobs:

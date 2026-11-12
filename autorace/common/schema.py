@@ -187,3 +187,59 @@ class ResultEntry(BaseAutoraceModel):
             data["race_no"] = race_no
             entries.append(cls.model_validate(data))
         return entries
+
+
+class OddsEntry(BaseAutoraceModel):
+    """オッズ 1行=1組み合わせ（縦持ち）"""
+    place_code: int
+    race_date: str
+    race_no: int
+    bet_type: str          # tns/fns/rtw/rfw/rt3/rf3/wid
+    combo: str             # "1-2-3"（連複は昇順）
+    odds: Optional[float] = None
+    odds_max: Optional[float] = None   # 複勝・ワイドのみ
+    snapshot: str = "final"            # final / pre など
+
+
+class OddsPlayerEntry(BaseAutoraceModel):
+    """オッズ応答の playerList（平均ST・良走路タイムなど）"""
+    place_code: int
+    race_date: str
+    race_no: int
+    player_code: int = Field(alias="playerCode")
+
+    car_no: int = Field(alias="carNo")
+    handicap: Optional[float] = Field(default=None, alias="handicap")
+    trial_time: Optional[float] = Field(default=None, alias="trialTime")
+    trial_retry_code: Optional[str] = Field(default=None, alias="trialRetryCode")
+    absent: Optional[str] = Field(default=None, alias="absent")
+    race_dev: Optional[float] = Field(default=None, alias="raceDev")
+    st_ave: Optional[float] = Field(default=None, alias="stAve")
+    good_track_trial_ave: Optional[float] = Field(default=None, alias="goodTrackTraialAve")
+    good_track_race_ave: Optional[float] = Field(default=None, alias="goodTrackRaceAve")
+    good_track_race_best: Optional[float] = Field(default=None, alias="goodTrackRaceBest")
+    good_track_race_best_place: Optional[str] = Field(default=None, alias="goodTrackRaceBestPlace")
+    sunny_expect_code: Optional[str] = Field(default=None, alias="sunnyExpectCode")
+    rain_expect_code: Optional[str] = Field(default=None, alias="rainExpectCode")
+    st_expect_code: Optional[str] = Field(default=None, alias="stExpectCode")
+    ai_expect_code: Optional[str] = Field(default=None, alias="aiExpectCode")
+
+    @field_validator(
+        "trial_retry_code", "absent", "good_track_race_best_place",
+        "sunny_expect_code", "rain_expect_code", "st_expect_code", "ai_expect_code",
+        mode="before",
+    )
+    @classmethod
+    def ensure_str_codes(cls, v: Any) -> Optional[str]:
+        return _to_code_str(v)
+
+
+class RefundEntry(BaseAutoraceModel):
+    place_code: int
+    race_date: str
+    race_no: int
+    bet_type: str
+    slot: int = 1
+    combo: str
+    payout: int
+    popularity: Optional[int] = None

@@ -1,0 +1,47 @@
+name: backfill
+# 過去データの一括取得（手動実行）。データはGoogleドライブ（gdrive:autorace-predictor/data）に置き、リポジトリには置かない。
+on:
+  workflow_dispatch:
+    inputs:
+      start: { description: "開始日 (YYYY-MM-DD)", required: true, type: string }
+      end: { description: "終了日 (YYYY-MM-DD)", required: true, type: string }
+      places: { description: "場コード（カンマ区切り）", required: false, default: "2,3,4,5,6", type: string }
+      kinds: { description: "取得する種類", required: false, default: "program,result,odds,refund", type: string }
+concurrency: { group: autorace-fetch, cancel-in-progress: false }
+permissions: { contents: read }
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env:
+      START_DATE: ${{ inputs.start }}
+      END_DATE: ${{ inputs.end }}
+      PLACES: ${{ inputs.places }}
+      KINDS: ${{ inputs.kinds }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: ./.github/actions/setup
+        with: { rclone_config: "${{ secrets.RCLONE_CONFIG }}" }
+      - name: Googleドライブから対象月のデータを取得
+        run: |
+          python - << 'PY'
+          import datetime, os, subprocess
+          s = datetime.date.fromisoformat(os.environ["START_DATE"]); e = datetime.date.fromisoformat(os.environ["END_DATE"])
+          months, cur = set(), s.replace(day=1)
+          while cur <= e:
+              months.add((cur.strftime("%Y"), cur.strftime("%Y-%m")))
+              cur = (cur.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+          cmd = ["rclone", "copy", "gdrive:autorace-predictor/data", "data"]
+          for y, ym in sorted(months):
+              cmd += ["--include", f"_done/{y}/{ym}.txt", "--include", f"*/{y}/{ym}.parquet"]
+          subprocess.run(cmd, check=False)
+          PY
+      - name: 一括取得
+        run: |
+          python -m autorace.scripts.backfill --start "$START_DATE" --end "$END_DATE" \
+            --places "$PLACES" --kinds "$KINDS" --max-minutes 330
+      - name: Googleドライブへ保存
+        if: always()
+        run: |
+          if [ -d data ]; then rclone copy data gdrive:autorace-predictor/data; fi
+          find data -name '*.parquet' 2>/dev/null | wc -l | xargs echo "parquet files:"
