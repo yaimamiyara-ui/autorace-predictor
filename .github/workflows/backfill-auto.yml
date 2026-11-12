@@ -1,0 +1,56 @@
+name: backfill-auto
+# 過去データの自動取得。config/backfill_range.txt の期間を、6時間ごとに続きから取得する（取得済みは _done で飛ばす）。
+# 期間を全部取り終えたら、このファイルの期間を書き換えるか、ワークフローを無効にする。
+on:
+  schedule:
+    - cron: "30 */6 * * *"
+  workflow_dispatch:
+concurrency: { group: autorace-fetch, cancel-in-progress: false }
+jobs:
+  backfill:
+    runs-on: ubuntu-latest
+    timeout-minutes: 350
+    env: { PYTHONPATH: "${{ github.workspace }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -q -r requirements.txt
+      - name: rclone
+        env: { RCLONE_CONFIG_CONTENT: "${{ secrets.RCLONE_CONFIG }}" }
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+          mkdir -p ~/.config/rclone
+          printf "%s\n" "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: 期間と取得済み記録をDriveから取得
+        id: range
+        run: |
+          IFS=, read S E < config/backfill_range.txt
+          echo "start=$S" >> "$GITHUB_OUTPUT"; echo "end=$E" >> "$GITHUB_OUTPUT"
+          rclone copy gdrive:autorace-predictor/data data --include "_done/**" || true
+      - name: 未取得の最初の月を探してその月以降のParquetだけ取得
+        run: |
+          python - <<'PY'
+          import datetime, os, subprocess, pathlib
+          s, e = open("config/backfill_range.txt").read().strip().split(",")
+          s, e = datetime.date.fromisoformat(s), datetime.date.fromisoformat(e)
+          done = set()
+          for f in pathlib.Path("data/_done").rglob("*.txt"):
+              done |= {",".join(l.split(",")[:2]) for l in f.read_text().split()}
+          d = s
+          while d <= e and all(f"{d},{p}" in done for p in (2, 3, 4, 5, 6)):
+              d += datetime.timedelta(days=1)
+          print("first_pending", d)
+          cmd = ["rclone", "copy", "gdrive:autorace-predictor/data", "data"]
+          m = d.replace(day=1)
+          for _ in range(4):  # 1回の実行で進むのは数か月なので、その分だけ取得
+              cmd += ["--include", f"*/{m:%Y}/{m:%Y-%m}.parquet"]
+              m = (m.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
+          subprocess.run(cmd, check=False)
+          PY
+      - name: 取得
+        run: python -m autorace.scripts.backfill --start "${{ steps.range.outputs.start }}" --end "${{ steps.range.outputs.end }}" --max-minutes 330
+      - name: Driveへ保存
+        if: always()
+        run: '[ -d data ] && rclone copy data gdrive:autorace-predictor/data || true'
