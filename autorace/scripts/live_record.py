@@ -17,7 +17,7 @@ import pandas as pd
 
 from autorace.common.odds import parse_odds_body
 from autorace.common.schema import ProgramEntry
-from autorace.fetch.client import AutoraceClient
+from autorace.fetch.client import AutoraceAPIError, AutoraceClient
 
 logger = logging.getLogger(__name__)
 
@@ -193,6 +193,9 @@ def run_once(client: AutoraceClient | None = None, data_dir: Path | str = DEFAUL
                     })
                     recorded.add((place_code, race_date, race_no))
                     n_recorded += 1
+                except AutoraceAPIError:
+                    # そのレースのデータが無い（開催終了・中止など）。エラーではないので静かに飛ばす
+                    logger.info("place=%d R%d: no data", place_code, race_no)
                 except Exception as exc:
                     stats["errors"] += 1
                     logger.error("place=%d R%d error (%s)", place_code, race_no, type(exc).__name__)
