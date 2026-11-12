@@ -3,3 +3,5 @@ pydantic>=2
 pandas
 pyarrow
 numpy
+lightgbm>=4.3.0
+scipy>=1.11.0

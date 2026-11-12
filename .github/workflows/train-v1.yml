@@ -1,0 +1,41 @@
+name: train-v1
+# 学習モデルv1（3段階モデル）の学習と時系列検証。毎月1日と手動で実行。
+# Driveのデータで学習し、モデルと検証結果（report.json）をDriveの models/ に保存する。ログは件数と指標だけ。
+on:
+  schedule:
+    - cron: "17 19 1 * *"   # 毎月2日 04:17 JST
+  workflow_dispatch:
+    inputs:
+      end: { description: "学習に使う最終日 (YYYY-MM-DD、空なら前日)", required: false, type: string }
+      train_months: { description: "学習期間（月）", required: false, default: "12", type: string }
+concurrency: { group: autorace-model, cancel-in-progress: false }
+jobs:
+  train:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    env:
+      PYTHONPATH: ${{ github.workspace }}
+      END_INPUT: ${{ inputs.end }}
+      TRAIN_MONTHS: ${{ inputs.train_months || '12' }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -q -r requirements.txt
+      - run: python -m unittest tests.test_v1
+      - name: rclone
+        env: { RCLONE_CONFIG_CONTENT: "${{ secrets.RCLONE_CONFIG }}" }
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+          mkdir -p ~/.config/rclone
+          printf "%s\n" "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: Driveからデータを取得
+        run: rclone copy gdrive:autorace-predictor/data data --include "program/**" --include "race_result/**" --include "race_info/**"
+      - name: 学習と検証
+        run: |
+          END="${END_INPUT:-$(TZ=Asia/Tokyo date -d yesterday +%F)}"
+          python -m autorace.scripts.train_v1 --data-dir data --out-dir out --end-date "$END" --train-months "$TRAIN_MONTHS"
+      - name: モデルと結果をDriveへ保存
+        if: always()
+        run: '[ -d out ] && rclone copy out gdrive:autorace-predictor/models || true'
