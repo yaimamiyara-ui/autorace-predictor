@@ -43,7 +43,7 @@ for place, date, rno in [(6, "2026-11-11", 11), (6, "2015-11-12", 11)]:
     except AutoraceAPIError as e:
         print("REFUND Failure", date, e.errors)
 # 学習モデル v1 用：レース単位の項目（距離・周回・走路状態・気温など）の有無を確認（項目名と型だけ）
-for place, date, rno in [(6, "2026-11-11", 11), (3, "2024-08-10", 12), (2, "2024-02-03", 1)]:
+for place, date, rno in [(6, "2026-11-11", 11), (3, "2024-08-10", 12), (5, "2025-06-15", 1), (2, "2024-02-03", 1)]:
     for kind, fn in (("PROGRAM", c.program), ("RESULT", c.race_result)):
         try:
             b = fn(place, date, rno).get("body") or {}

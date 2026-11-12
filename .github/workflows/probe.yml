@@ -1,7 +1,9 @@
 name: probe
 on:
   workflow_dispatch:
-concurrency: { group: autorace-fetch, cancel-in-progress: false }
+  push:
+    paths: ["autorace/scripts/probe.py"]
+concurrency: { group: autorace-probe, cancel-in-progress: true }
 jobs:
   probe:
     runs-on: ubuntu-latest
