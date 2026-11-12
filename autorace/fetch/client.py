@@ -167,3 +167,8 @@ class AutoraceClient:
     def race_refund(self, place_code: int, race_date: str) -> Dict[str, Any]:
         payload = {"placeCode": place_code, "raceDate": race_date}
         return self._post("/race_info/RaceRefund", payload)
+
+    def other_race_info(self, place_code: int, race_date: str, race_no: int) -> Dict[str, Any]:
+        """レース単位の情報（距離・走路状態・気温・グレード・節の何日目など）。出走表ページの通信で確認済み。"""
+        payload = {"placeCode": place_code, "raceDate": race_date, "raceNo": race_no}
+        return self._post("/race_info/OtherRaceInfo", payload)

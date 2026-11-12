@@ -42,11 +42,17 @@ for place, date, rno in [(6, "2026-11-11", 11), (6, "2015-11-12", 11)]:
         print("REFUND_SHAPE", date, json.dumps(shape(c.race_refund(place, date).get("body")), ensure_ascii=False)[:1500])
     except AutoraceAPIError as e:
         print("REFUND Failure", date, e.errors)
-# 学習モデル v1 用：レース単位の項目（距離・周回・走路状態・気温など）の有無を確認（項目名と型だけ）
-for place, date, rno in [(6, "2026-11-11", 11), (3, "2024-08-10", 12), (5, "2025-06-15", 1), (2, "2024-02-03", 1)]:
-    for kind, fn in (("PROGRAM", c.program), ("RESULT", c.race_result)):
+# 学習モデル v1 用：過去日でもレース情報（OtherRaceInfo）が取れるか、走路状態コードの値を確認（中身は最小限）
+from collections import Counter
+for place, date in [(3, "2024-08-10"), (5, "2025-06-15"), (2, "2025-01-05")]:
+    cnt, keys, n = Counter(), None, 0
+    for rno in range(1, 13):
         try:
-            b = fn(place, date, rno).get("body") or {}
-            print(kind + "_SHAPE", place, date, rno, json.dumps(shape(b), ensure_ascii=False)[:2500])
+            b = c.other_race_info(place, date, rno).get("body") or {}
         except AutoraceAPIError as e:
-            print(kind + " Failure", e.errors)
+            print("RACEINFO Failure", place, date, rno, e.errors)
+            break
+        n += 1
+        keys = keys or sorted(b.keys())
+        cnt[(b.get("distance"), b.get("situationCode"), b.get("raceSituationCode"), b.get("weather"))] += 1
+    print("RACEINFO", place, date, "races=", n, "keys=", keys, "dist/situ/race_situ/weather=", dict(cnt))

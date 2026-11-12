@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional, Set, Tuple
 import pandas as pd
 
 from autorace.common.odds import parse_odds_body, parse_refund_body
-from autorace.common.schema import ProgramEntry, ResultEntry
+from autorace.common.schema import ProgramEntry, RaceInfoEntry, ResultEntry
 from autorace.fetch.client import AutoraceAPIError, AutoraceClient
 
 logging.basicConfig(
@@ -24,7 +24,7 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-VALID_KINDS = ("program", "result", "odds", "refund")
+VALID_KINDS = ("program", "result", "odds", "refund", "raceinfo")
 
 DEDUP_KEYS_MAP = {
     "program": ["place_code", "race_date", "race_no", "player_code"],
@@ -32,6 +32,7 @@ DEDUP_KEYS_MAP = {
     "odds": ["place_code", "race_date", "race_no", "bet_type", "combo", "snapshot"],
     "odds_player": ["place_code", "race_date", "race_no", "player_code"],
     "refund": ["place_code", "race_date", "race_no", "bet_type", "slot", "combo"],
+    "race_info": ["place_code", "race_date", "race_no"],
 }
 
 
@@ -41,8 +42,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--end", required=True, help="End date (YYYY-MM-DD)")
     parser.add_argument("--places", nargs="+", default=["2", "3", "4", "5", "6"],
                         help="Place codes (space or comma separated)")
-    parser.add_argument("--kinds", default="program,result,odds,refund",
-                        help="Comma-separated kinds: program,result,odds,refund")
+    parser.add_argument("--kinds", default="program,result,odds,refund,raceinfo",
+                        help="Comma-separated kinds: program,result,odds,refund,raceinfo")
     parser.add_argument("--snapshot", default="final", help="Snapshot label for odds")
     parser.add_argument("--data-dir", type=Path, default=Path("data"))
     parser.add_argument("--save-raw", action="store_true", help="Save all raw JSON under data/raw/")
@@ -124,7 +125,8 @@ def save_raw_json(base_dir: Path, kind: str, race_date: str, place_code: int, ra
 def fetch_race_kinds(
     client: AutoraceClient, needed_kinds: Set[str], place_code: int, date_str: str, race_no: int,
     snapshot: str, data_dir: Path, save_raw: bool,
-) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
+) -> Tuple[List[dict], List[dict], List[dict], List[dict], List[dict]]:
+    info_rows: List[dict] = []
     prog_rows: List[dict] = []
     res_rows: List[dict] = []
     odds_rows: List[dict] = []
@@ -167,7 +169,21 @@ def fetch_race_kinds(
             except AutoraceAPIError:
                 pass
 
-    return prog_rows, res_rows, odds_rows, odds_player_rows
+    if "raceinfo" in needed_kinds:
+        # レース単位の情報（距離・走路状態・気温など）。単独で頼まれたときはこれでレースの有無を判断する
+        asked_any = bool(needed_kinds & {"program", "result"})
+        if not asked_any or prog_rows or res_rows:
+            try:
+                resp = client.other_race_info(place_code, date_str, race_no)
+                if save_raw:
+                    save_raw_json(data_dir, "race_info", date_str, place_code, race_no, resp)
+                e = RaceInfoEntry.from_api_response(place_code, date_str, race_no, resp.get("body"))
+                if e is not None:
+                    info_rows = [e.model_dump()]
+            except AutoraceAPIError:
+                pass
+
+    return prog_rows, res_rows, odds_rows, odds_player_rows, info_rows
 
 
 def flush(data_dir: Path, d: datetime.date, rows: Dict[str, List[dict]]) -> None:
@@ -199,15 +215,15 @@ def main() -> None:
             if not needed_kinds:
                 continue
 
-            rows: Dict[str, List[dict]] = {k: [] for k in ("program", "race_result", "odds", "odds_player", "refund")}
-            per_race_kinds = needed_kinds & {"program", "result", "odds"}
+            rows: Dict[str, List[dict]] = {k: [] for k in ("program", "race_result", "odds", "odds_player", "refund", "race_info")}
+            per_race_kinds = needed_kinds & {"program", "result", "odds", "raceinfo"}
             race_held = False
 
             if per_race_kinds:
                 for race_no in range(1, 13):
-                    pr, rr, orows, oprows = fetch_race_kinds(
+                    pr, rr, orows, oprows, irows = fetch_race_kinds(
                         client, per_race_kinds, place_code, date_str, race_no, args.snapshot, args.data_dir, args.save_raw)
-                    if not (pr or rr or orows or oprows):
+                    if not (pr or rr or orows or oprows or irows):
                         if race_no == 1:
                             logger.info("No race held: date=%s place=%d", date_str, place_code)
                         break
@@ -216,6 +232,7 @@ def main() -> None:
                     rows["race_result"] += rr
                     rows["odds"] += orows
                     rows["odds_player"] += oprows
+                    rows["race_info"] += irows
 
             if "refund" in needed_kinds and (race_held or not per_race_kinds):
                 try:
@@ -233,9 +250,9 @@ def main() -> None:
             flush(args.data_dir, d, rows)
             mark_done(done_path, done_cache[done_path], date_str, place_code, needed_kinds)
             if race_held:
-                logger.info("Done date=%s place=%d (prog=%d res=%d odds=%d odds_p=%d refund=%d)",
+                logger.info("Done date=%s place=%d (prog=%d res=%d odds=%d odds_p=%d refund=%d info=%d)",
                             date_str, place_code, len(rows["program"]), len(rows["race_result"]),
-                            len(rows["odds"]), len(rows["odds_player"]), len(rows["refund"]))
+                            len(rows["odds"]), len(rows["odds_player"]), len(rows["refund"]), len(rows["race_info"]))
 
 
 if __name__ == "__main__":

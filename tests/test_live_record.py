@@ -39,6 +39,11 @@ class Fake:
         self.calls.append(("odds", p, r))
         return {"result": "Success", "body": _odds()}
 
+    def other_race_info(self, p, d, r):
+        self.calls.append(("info", p, r))
+        return {"result": "Success", "body": {"placeCode": p, "raceNo": r, "distance": 3100, "situationCode": 0,
+                                              "temp": "16.0", "roadtemp": "20.0", "paragraphday": 1}}
+
 
 class TestLiveRecord(unittest.TestCase):
     def test_flow(self):
@@ -68,6 +73,8 @@ class TestLiveRecord(unittest.TestCase):
             meta = pd.read_parquet(Path(tmp) / "live_meta/2026/2026-11.parquet")
             self.assertEqual(list(meta["race_date"]), ["2026-11-12"])  # 開催日で記録
             self.assertEqual(list(meta["minutes_to_close"]), [5.0])
+            self.assertEqual(list(meta["ri_distance"]), [3100])      # レース情報も一緒に記録
+            self.assertEqual(list(meta["ri_situation_code"]), [0])
             fake2 = Fake({"placeCode": 6, "cancelFlg": "1"}, {})
             live_record.run_once(client=fake2, data_dir=tmp, now=datetime(2026, 11, 12, 12, 0, tzinfo=JST))
             self.assertEqual(fake2.calls, [])

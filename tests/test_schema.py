@@ -76,3 +76,14 @@ class TestAutoraceSchema(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRaceInfo(unittest.TestCase):
+    def test_parse(self):
+        from autorace.common.schema import RaceInfoEntry
+        body = {"placeCode": 6, "raceNo": 11, "gradeCode": 3, "paragraphday": 1, "raceName": "予選", "distance": 3100,
+                "temp": "16.0", "roadtemp": "20.0", "situationCode": 0, "weather": "晴", "raceSituationCode": 0,
+                "raceRoadtemp": "23.0", "finalRaceNo": 12, "dummyflag": None}
+        e = RaceInfoEntry.from_api_response(6, "2026-11-11", 11, body)
+        self.assertEqual((e.distance, e.situation_code, e.road_temp, e.race_road_temp, e.paragraph_day), (3100, 0, 20.0, 23.0, 1))
+        self.assertIsNone(RaceInfoEntry.from_api_response(6, "2026-11-11", 11, {}))

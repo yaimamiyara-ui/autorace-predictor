@@ -301,3 +301,43 @@ class RefundEntry(BaseAutoraceModel):
     combo: str
     payout: int
     popularity: Optional[int] = None
+
+
+class RaceInfoEntry(BaseAutoraceModel):
+    """レース単位の情報（OtherRaceInfo）。
+    temp/humid/roadtemp/situation_code/weather は試走ごろの値、race_* はレース時の値。
+    予想で使ってよいのは試走ごろの値だけ（race_* はレース後に確定するので学習の特徴量に入れない）。
+    situation_code は走路状態のコード（0=良 と思われる。他の値の意味は実データで確認する）。"""
+    place_code: int
+    race_date: str
+    race_no: int
+    grade_code: Optional[int] = Field(default=None, alias="gradeCode")
+    grade_name: Optional[str] = Field(default=None, alias="gradeName")
+    period_start_date: Optional[str] = Field(default=None, alias="periodStartDate")
+    period_end_date: Optional[str] = Field(default=None, alias="periodEndDate")
+    paragraph_day: Optional[int] = Field(default=None, alias="paragraphday")
+    title: Optional[str] = Field(default=None, alias="title")
+    race_name: Optional[str] = Field(default=None, alias="raceName")
+    distance: Optional[int] = Field(default=None, alias="distance")
+    temp: Optional[float] = Field(default=None, alias="temp")
+    humid: Optional[float] = Field(default=None, alias="humid")
+    road_temp: Optional[float] = Field(default=None, alias="roadtemp")
+    situation_code: Optional[int] = Field(default=None, alias="situationCode")
+    weather: Optional[str] = Field(default=None, alias="weather")
+    race_temp: Optional[float] = Field(default=None, alias="raceTemp")
+    race_humid: Optional[float] = Field(default=None, alias="raceHumid")
+    race_road_temp: Optional[float] = Field(default=None, alias="raceRoadtemp")
+    race_situation_code: Optional[int] = Field(default=None, alias="raceSituationCode")
+    race_weather: Optional[str] = Field(default=None, alias="raceWeather")
+    class_code: Optional[int] = Field(default=None, alias="classCode")
+    final_race_no: Optional[int] = Field(default=None, alias="finalRaceNo")
+    race_start_time: Optional[str] = Field(default=None, alias="raceStartTime")
+    telvote_time: Optional[str] = Field(default=None, alias="telvoteTime")
+
+    @classmethod
+    def from_api_response(cls, place_code: int, race_date: str, race_no: int, body: Any) -> Optional["RaceInfoEntry"]:
+        if not isinstance(body, dict) or not body:
+            return None
+        data = {k: v for k, v in body.items() if k not in ("placeCode", "raceNo")}
+        data.update(place_code=place_code, race_date=race_date, race_no=race_no)
+        return cls.model_validate(data)

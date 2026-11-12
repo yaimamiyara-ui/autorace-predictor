@@ -16,7 +16,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 
 from autorace.common.odds import parse_odds_body
-from autorace.common.schema import ProgramEntry
+from autorace.common.schema import ProgramEntry, RaceInfoEntry
 from autorace.fetch.client import AutoraceAPIError, AutoraceClient
 
 logger = logging.getLogger(__name__)
@@ -173,6 +173,18 @@ def run_once(client: AutoraceClient | None = None, data_dir: Path | str = DEFAUL
                     if not odds_entries:
                         logger.warning("place=%d R%d: 0 odds parsed", place_code, race_no)
                         continue
+                    info = {}
+                    if stats["requests"] + 1 <= max_requests:
+                        try:
+                            info_resp = api.other_race_info(place_code, race_date, race_no)
+                            stats["requests"] += 1
+                            ie = RaceInfoEntry.from_api_response(place_code, race_date, race_no, info_resp.get("body"))
+                            if ie is not None:
+                                # 試走ごろの距離・走路状態・気温など（race_* はまだ空のことが多い）
+                                info = {f"ri_{k}": v for k, v in ie.model_dump().items()
+                                        if k not in ("place_code", "race_date", "race_no")}
+                        except AutoraceAPIError:
+                            pass
                     t = clock()
                     fetched_at = t.isoformat(timespec="seconds")
                     is_now = now_no is not None and race_no == now_no
@@ -189,7 +201,7 @@ def run_once(client: AutoraceClient | None = None, data_dir: Path | str = DEFAUL
                         "period_start_date": venue.get("periodStartDate"), "roadtemp": venue.get("roadtemp"),
                         "weather": venue.get("weather"), "distance": venue.get("distance"),
                         "paragraphday": venue.get("paragraphday"), "nighter_code": venue.get("nighterCode"),
-                        "fetched_at": fetched_at, "minutes_to_close": mtc,
+                        "fetched_at": fetched_at, "minutes_to_close": mtc, **info,
                     })
                     recorded.add((place_code, race_date, race_no))
                     n_recorded += 1

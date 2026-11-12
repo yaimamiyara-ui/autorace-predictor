@@ -35,16 +35,18 @@ jobs:
           import datetime, os, subprocess, pathlib
           s, e = open("config/backfill_range.txt").read().strip().split(",")
           s, e = datetime.date.fromisoformat(s), datetime.date.fromisoformat(e)
+          # 全種類（出走表・結果・オッズ・払戻・レース情報）が取得済みの日だけを飛ばす
+          kinds = ("program", "result", "odds", "refund", "raceinfo")
           done = set()
           for f in pathlib.Path("data/_done").rglob("*.txt"):
-              done |= {",".join(l.split(",")[:2]) for l in f.read_text().split()}
+              done |= set(f.read_text().split())
           d = s
-          while d <= e and all(f"{d},{p}" in done for p in (2, 3, 4, 5, 6)):
+          while d <= e and all(f"{d},{p},{k}" in done for p in (2, 3, 4, 5, 6) for k in kinds):
               d += datetime.timedelta(days=1)
           print("first_pending", d)
           cmd = ["rclone", "copy", "gdrive:autorace-predictor/data", "data"]
           m = d.replace(day=1)
-          for _ in range(4):  # 1回の実行で進むのは数か月なので、その分だけ取得
+          for _ in range(8):  # 1回の実行で進むのは数か月なので、その分だけ取得（余裕を見て8か月）
               cmd += ["--include", f"*/{m:%Y}/{m:%Y-%m}.parquet"]
               m = (m.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
           subprocess.run(cmd, check=False)
