@@ -1,0 +1,34 @@
+name: live-record
+# 試走発表後のオッズを記録し続ける（Gemini作成、Claude確認）。JST 10:00〜翌00:59 に10分おき。
+on:
+  schedule:
+    - cron: "*/10 1-15 * * *"
+  workflow_dispatch:
+concurrency: { group: autorace-live, cancel-in-progress: false }
+jobs:
+  record:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env: { PYTHONPATH: "." }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: "pip" }
+      - run: pip install -q -r requirements.txt
+      - name: rclone
+        env: { RCLONE_CONFIG_CONTENT: "${{ secrets.RCLONE_CONFIG }}" }
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+          mkdir -p ~/.config/rclone && chmod 700 ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: 開催月のデータをDriveから取得
+        run: |
+          Y=$(TZ=Asia/Tokyo date -d '5 hours ago' +%Y); YM=$(TZ=Asia/Tokyo date -d '5 hours ago' +%Y-%m)
+          echo "INC=--include /odds_pre/$Y/$YM.parquet --include /program_pre/$Y/$YM.parquet --include /live_meta/$Y/$YM.parquet" >> "$GITHUB_ENV"
+          rclone copy gdrive:autorace-predictor/data data --include "/odds_pre/$Y/$YM.parquet" --include "/program_pre/$Y/$YM.parquet" --include "/live_meta/$Y/$YM.parquet" || true
+      - name: 記録
+        run: python -m autorace.scripts.live_record
+      - name: Driveへ保存
+        if: always()
+        run: '[ -d data ] && rclone copy data gdrive:autorace-predictor/data $INC || true'
