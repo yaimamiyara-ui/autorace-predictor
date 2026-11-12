@@ -1,0 +1,35 @@
+name: backtest
+# 基準モデルv0の過去検証（手動実行）。Driveのデータで計算し、結果をDriveに保存する。ログには集計値だけ。
+on:
+  workflow_dispatch:
+    inputs:
+      start: { description: "検証開始日 (YYYY-MM-DD)", required: true, type: string }
+      end: { description: "検証終了日 (YYYY-MM-DD)", required: true, type: string }
+concurrency: { group: autorace-model, cancel-in-progress: false }
+jobs:
+  backtest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    env:
+      START_DATE: ${{ inputs.start }}
+      END_DATE: ${{ inputs.end }}
+      PYTHONPATH: ${{ github.workspace }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -q -r requirements.txt
+      - name: rclone
+        env: { RCLONE_CONFIG_CONTENT: "${{ secrets.RCLONE_CONFIG }}" }
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+          mkdir -p ~/.config/rclone
+          printf "%s\n" "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: Driveからデータを取得
+        run: rclone copy gdrive:autorace-predictor/data data --include "program/**" --include "race_result/**" --include "odds/**" --include "refund/**"
+      - name: 過去検証
+        run: python -m autorace.scripts.backtest_v0 --start-date "$START_DATE" --end-date "$END_DATE"
+      - name: 結果をDriveへ保存
+        if: always()
+        run: '[ -d data/backtest ] && rclone copy data/backtest gdrive:autorace-predictor/data/backtest || true'
