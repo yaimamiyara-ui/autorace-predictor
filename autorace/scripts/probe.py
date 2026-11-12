@@ -29,7 +29,13 @@ for place, date, rno in [(6, "2026-11-11", 11), (6, "2015-11-12", 11), (2, "2010
           "trial_time_ok:", (not isinstance(r, str)) and all(x.trial_time is not None for x in r))
 for place, date, rno in [(6, "2026-11-11", 11), (6, "2015-11-12", 11)]:
     try:
-        print("ODDS_SHAPE", date, json.dumps(shape(c.odds(place, date, rno).get("body")), ensure_ascii=False)[:1500])
+        ob = c.odds(place, date, rno).get("body") or {}
+        print("ODDS_KEYS", date, list(ob.keys()))
+        for k, v in ob.items():
+            if k.endswith("OddsList") and isinstance(v, dict):
+                n = sum(len(x) if isinstance(x, dict) else 1 for x in v.values())
+                deep = sum(len(y) for x in v.values() if isinstance(x, dict) for y in x.values() if isinstance(y, dict))
+                print("ODDS_COUNT", date, k, "level2=", n, "level3=", deep)
     except AutoraceAPIError as e:
         print("ODDS Failure", date, e.errors)
     try:
