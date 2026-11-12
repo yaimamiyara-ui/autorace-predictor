@@ -123,6 +123,14 @@ def run_training_pipeline(data_dir: str | Path, out_dir: str | Path, end_date: s
     model_save_dir = Path(out_dir) / "models" / "v1" / end_date
     prod_model.save(model_save_dir)
 
+    # 特徴量の重要度（gain、上位20）。効いていない特徴の見直しに使う
+    importance = {}
+    for stage, b in prod_model.boosters.items():
+        gains = b.feature_importance(importance_type="gain")
+        total = float(gains.sum()) or 1.0
+        pairs = sorted(zip(b.feature_name(), gains), key=lambda x: -x[1])[:20]
+        importance[f"m{stage}"] = {n: round(float(g) / total, 4) for n, g in pairs}
+
     summary_metrics: dict[str, Any] = {}
     for m_key in ("v1_three_stage", "v1_m1_harville", "v0_harville"):
         if fold_reports:
@@ -137,13 +145,16 @@ def run_training_pipeline(data_dir: str | Path, out_dir: str | Path, end_date: s
         "summary_mean": summary_metrics, "folds": fold_reports,
         "production_model": {"model_dir": str(model_save_dir), "train_start": prod_train_start,
                              "valid_start": prod_valid_start, "end_date": end_date, "train_rows": int(len(prod_tr)),
-                             "valid_rows": int(len(prod_va)), "temperatures": prod_model.temperatures},
+                             "valid_rows": int(len(prod_va)), "temperatures": prod_model.temperatures,
+                             "feature_importance_gain": importance},
     }
     text = json.dumps(report_data, ensure_ascii=False, indent=2)
     (model_save_dir / "report.json").write_text(text, encoding="utf-8")
     (Path(out_dir) / "report.json").write_text(text, encoding="utf-8")
     for m_key, m in summary_metrics.items():
         print(f"[Mean] {m_key}: " + " ".join(f"{k}={_fmt(v)}" for k, v in m.items()))
+    for st, imp in importance.items():
+        print(f"[Importance {st}] " + " ".join(f"{k}={v}" for k, v in list(imp.items())[:8]))
     print(f"[Production] train_rows={len(prod_tr)} valid_rows={len(prod_va)} T={prod_model.temperatures}")
     return report_data
 
