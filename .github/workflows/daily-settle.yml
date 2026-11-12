@@ -1,0 +1,43 @@
+name: daily-settle
+# 毎朝の答え合わせ（Gemini作成、Claude確認：PYTHONPATH 追加、rclone を公式スクリプトで導入）。JST 11:30
+on:
+  schedule:
+    - cron: "30 2 * * *"
+  workflow_dispatch:
+    inputs:
+      date: { description: "対象日 (YYYY-MM-DD)。省略時はJSTの前日", required: false, type: string }
+concurrency: { group: autorace-model, cancel-in-progress: false }
+jobs:
+  settle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env: { PYTHONPATH: "." }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11", cache: "pip" }
+      - run: pip install -q -r requirements.txt
+      - name: rclone
+        env: { RCLONE_CONFIG_CONTENT: "${{ secrets.RCLONE_CONFIG }}" }
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+          mkdir -p ~/.config/rclone
+          printf '%s\n' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: 対象日
+        env: { INPUT_DATE: "${{ inputs.date }}" }
+        run: |
+          D="${INPUT_DATE:-$(TZ=Asia/Tokyo date -d yesterday +%Y-%m-%d)}"
+          [[ "$D" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || { echo "日付の形が不正: $D"; exit 1; }
+          echo "TARGET_DATE=$D" >> "$GITHUB_ENV"; echo "TY=${D:0:4}" >> "$GITHUB_ENV"; echo "TYM=${D:0:7}" >> "$GITHUB_ENV"
+      - name: Driveからデータを取得
+        run: |
+          for t in program race_result refund program_pre odds_pre tracker; do
+            rclone copy "gdrive:autorace-predictor/data/$t" "data/$t" || true
+          done
+          rclone copy "gdrive:autorace-predictor/data/odds/$TY/$TYM.parquet" "data/odds/$TY/" || true
+      - name: 答え合わせ
+        run: python -m autorace.scripts.settle_daily --date "$TARGET_DATE"
+      - name: Driveへ保存
+        if: always()
+        run: '[ -d data/tracker ] && rclone copy data/tracker gdrive:autorace-predictor/data/tracker || true'
