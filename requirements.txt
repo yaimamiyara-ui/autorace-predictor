@@ -1,0 +1,4 @@
+requests
+pydantic>=2
+pandas
+pyarrow
