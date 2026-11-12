@@ -1,0 +1,29 @@
+name: quick-eval
+# 集まっている実データだけで v1 をすぐ試す（手動）。日付で学習60%・検証15%・テスト25%に分ける。ログは集計値だけ。
+on:
+  workflow_dispatch:
+concurrency: { group: autorace-model, cancel-in-progress: false }
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    env: { PYTHONPATH: "${{ github.workspace }}" }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -q -r requirements.txt
+      - name: rclone
+        env: { RCLONE_CONFIG_CONTENT: "${{ secrets.RCLONE_CONFIG }}" }
+        run: |
+          curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+          mkdir -p ~/.config/rclone
+          printf "%s\n" "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: Driveからデータを取得
+        run: rclone copy gdrive:autorace-predictor/data data --include "program/**" --include "race_result/**" --include "race_info/**" --include "odds/**" --include "refund/**"
+      - name: 評価
+        run: python -m autorace.scripts.quick_eval_v1 --data-dir data --out out/quick_eval_v1.json
+      - name: 結果をDriveへ保存
+        if: always()
+        run: '[ -d out ] && rclone copy out gdrive:autorace-predictor/models/quick_eval || true'
