@@ -254,9 +254,38 @@ def _parse_refund_record(place_code: int, race_date: str, race_no: int, bet_type
                         slot=slot, combo=combo, payout=payout_c[0], popularity=pop_c[0] if pop_c else None)]
 
 
+_POS_KEYS = ("1thCarNo", "2thCarNo", "3thCarNo")
+
+
+def _parse_known_refund(place_code: int, race_date: str, race_no: int, bet_type: str, node: Any) -> Optional[List[RefundEntry]]:
+    """実際の形（2026-11-12確認）：{"typeCode", "typeName", "list": [{"1thCarNo","2thCarNo","3thCarNo" or "carNo", "refund", "pop", ...}]}
+    この形なら正確に読む。違う形なら None を返して推測パーサに回す。"""
+    if not (isinstance(node, dict) and isinstance(node.get("list"), list)):
+        return None
+    unordered = bet_type in ("rfw", "rf3", "wid")
+    out: List[RefundEntry] = []
+    for slot, item in enumerate(node["list"], start=1):
+        if not isinstance(item, dict):
+            return None
+        if "carNo" in item:
+            cars = [item.get("carNo")]
+        else:
+            cars = [item.get(k) for k in _POS_KEYS if k in item]
+        combo = _format_combo([str(c) for c in cars], unordered) if all(c is not None for c in cars) and cars else None
+        payout = _parse_int(item.get("refund"))
+        if combo is None or payout is None:
+            return None
+        out.append(RefundEntry(place_code=place_code, race_date=race_date, race_no=race_no, bet_type=bet_type,
+                               slot=slot, combo=combo, payout=payout, popularity=_parse_int(item.get("pop"))))
+    return out
+
+
 def _parse_bet_node(place_code: int, race_date: str, race_no: int, bet_type: str, node: Any) -> Tuple[List[RefundEntry], bool]:
     if node in (None, "", [], {}):
         return [], False
+    known = _parse_known_refund(place_code, race_date, race_no, bet_type, node)
+    if known is not None:
+        return known, False
     entries: List[RefundEntry] = []
     if isinstance(node, list):
         unparsed = False

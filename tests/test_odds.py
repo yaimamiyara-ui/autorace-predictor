@@ -40,3 +40,25 @@ class TestOdds(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestRefundRealShape(unittest.TestCase):
+    def test_real_refund(self):
+        body = [{"raceNo": 1, "refundInfo": {
+            "rt3": {"typeCode": 0, "typeName": "通常", "list": [{"1thCarNo": 5, "2thCarNo": 3, "3thCarNo": 4, "refund": 2410, "pop": 11, "refundVotes": "3074"}]},
+            "rf3": {"typeCode": 0, "typeName": "通常", "list": [{"1thCarNo": 3, "2thCarNo": 4, "3thCarNo": 5, "refund": 1190, "pop": 5, "refundVotes": "359"}]},
+            "wid": {"typeCode": 0, "typeName": "通常", "list": [{"1thCarNo": 3, "2thCarNo": 5, "refund": 210, "pop": 4},
+                                                              {"1thCarNo": 4, "2thCarNo": 5, "refund": 130, "pop": 2},
+                                                              {"1thCarNo": 3, "2thCarNo": 4, "refund": 1060, "pop": 10}]},
+            "tns": {"typeCode": 0, "typeName": "通常", "list": [{"carNo": 5, "refund": 100, "pop": 1, "refundVotes": "1524"}]},
+            "fns": {"typeCode": 0, "typeName": "通常", "list": [{"carNo": 5, "order": 1, "refund": 100, "pop": 1},
+                                                              {"carNo": 3, "order": 2, "refund": 280, "pop": 4}]},
+            "absent": []}}]
+        entries, raw = parse_refund_body(5, "2026-11-11", body)
+        self.assertEqual(raw, [])
+        got = {(e.bet_type, e.combo): (e.payout, e.popularity) for e in entries}
+        self.assertEqual(got[("rt3", "5-3-4")], (2410, 11))
+        self.assertEqual(got[("rf3", "3-4-5")], (1190, 5))
+        self.assertEqual(got[("fns", "3")], (280, 4))
+        self.assertEqual(got[("tns", "5")], (100, 1))
+        self.assertEqual(len([e for e in entries if e.bet_type == "wid"]), 3)
