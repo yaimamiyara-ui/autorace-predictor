@@ -1,5 +1,5 @@
 name: backfill
-# 過去データの一括取得（手動実行）。データはGoogleドライブ（gdrive:autorace-predictor/data）に置き、リポジトリには置かない。
+# 過去データの一括取得（手動実行）。Gemini作成、Claude確認（入力値は環境変数経由に変更）
 on:
   workflow_dispatch:
     inputs:
@@ -8,7 +8,6 @@ on:
       places: { description: "場コード（カンマ区切り）", required: false, default: "2,3,4,5,6", type: string }
       kinds: { description: "取得する種類", required: false, default: "program,result,odds,refund", type: string }
 concurrency: { group: autorace-fetch, cancel-in-progress: false }
-permissions: { contents: read }
 jobs:
   backfill:
     runs-on: ubuntu-latest
@@ -18,30 +17,33 @@ jobs:
       END_DATE: ${{ inputs.end }}
       PLACES: ${{ inputs.places }}
       KINDS: ${{ inputs.kinds }}
+      PYTHONPATH: ${{ github.workspace }}
     steps:
       - uses: actions/checkout@v4
-      - uses: ./.github/actions/setup
-        with: { rclone_config: "${{ secrets.RCLONE_CONFIG }}" }
-      - name: Googleドライブから対象月のデータを取得
+      - uses: actions/setup-python@v5
+        with: { python-version: "3.11" }
+      - run: pip install -q -r requirements.txt
+      - name: rclone
+        env: { RCLONE_CONFIG_CONTENT: "${{ secrets.RCLONE_CONFIG }}" }
         run: |
-          python - << 'PY'
+          curl -fsSL https://rclone.org/install.sh | sudo bash >/dev/null
+          mkdir -p ~/.config/rclone
+          printf "%s\n" "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
+          chmod 600 ~/.config/rclone/rclone.conf
+      - name: 対象月のデータをDriveから取得
+        run: |
+          python - <<'PY'
           import datetime, os, subprocess
           s = datetime.date.fromisoformat(os.environ["START_DATE"]); e = datetime.date.fromisoformat(os.environ["END_DATE"])
-          months, cur = set(), s.replace(day=1)
-          while cur <= e:
-              months.add((cur.strftime("%Y"), cur.strftime("%Y-%m")))
-              cur = (cur.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
-          cmd = ["rclone", "copy", "gdrive:autorace-predictor/data", "data"]
-          for y, ym in sorted(months):
-              cmd += ["--include", f"_done/{y}/{ym}.txt", "--include", f"*/{y}/{ym}.parquet"]
+          cmd = ["rclone", "copy", "gdrive:autorace-predictor/data", "data", "--include", "_done/**"]
+          c = s.replace(day=1)
+          while c <= e:
+              cmd += ["--include", f"*/{c:%Y}/{c:%Y-%m}.parquet"]
+              c = (c.replace(day=28) + datetime.timedelta(days=4)).replace(day=1)
           subprocess.run(cmd, check=False)
           PY
-      - name: 一括取得
-        run: |
-          python -m autorace.scripts.backfill --start "$START_DATE" --end "$END_DATE" \
-            --places "$PLACES" --kinds "$KINDS" --max-minutes 330
-      - name: Googleドライブへ保存
+      - name: 取得
+        run: python -m autorace.scripts.backfill --start "$START_DATE" --end "$END_DATE" --places "$PLACES" --kinds "$KINDS" --max-minutes 330
+      - name: Driveへ保存
         if: always()
-        run: |
-          if [ -d data ]; then rclone copy data gdrive:autorace-predictor/data; fi
-          find data -name '*.parquet' 2>/dev/null | wc -l | xargs echo "parquet files:"
+        run: '[ -d data ] && rclone copy data gdrive:autorace-predictor/data || true'

@@ -1,3 +1,9 @@
+"""過去データの一括取得（Gemini作成、Claude確認・修正）。
+
+修正点（Claudeのレビュー）：
+- typing の Any が抜けていて起動時にエラーになるのを修正
+- 場ごとにParquetへ書き込んでから完了印を付ける（強制終了時にデータだけ失うのを防ぐ）
+"""
 import argparse
 import datetime
 import json
@@ -37,11 +43,11 @@ def parse_args() -> argparse.Namespace:
                         help="Place codes (space or comma separated)")
     parser.add_argument("--kinds", default="program,result,odds,refund",
                         help="Comma-separated kinds: program,result,odds,refund")
-    parser.add_argument("--snapshot", default="final", help="Snapshot label for odds (default: final)")
-    parser.add_argument("--data-dir", type=Path, default=Path("data"), help="Base directory for output data")
-    parser.add_argument("--save-raw", action="store_true", help="Save all raw JSON responses under data/raw/")
+    parser.add_argument("--snapshot", default="final", help="Snapshot label for odds")
+    parser.add_argument("--data-dir", type=Path, default=Path("data"))
+    parser.add_argument("--save-raw", action="store_true", help="Save all raw JSON under data/raw/")
     parser.add_argument("--interval", type=float, default=3.0, help="Minimum interval between requests (sec)")
-    parser.add_argument("--max-minutes", type=float, default=None, help="Stop gracefully before exceeding minutes")
+    parser.add_argument("--max-minutes", type=float, default=None, help="Stop gracefully after this many minutes")
     return parser.parse_args()
 
 
@@ -100,15 +106,14 @@ def append_to_parquet(parquet_path: Path, records: List[dict], dedup_keys: List[
     parquet_path.parent.mkdir(parents=True, exist_ok=True)
     new_df = pd.DataFrame(records)
     if parquet_path.exists():
-        combined_df = pd.concat([pd.read_parquet(parquet_path), new_df], ignore_index=True)
+        combined = pd.concat([pd.read_parquet(parquet_path), new_df], ignore_index=True)
     else:
-        combined_df = new_df
-    combined_df = combined_df.drop_duplicates(subset=dedup_keys, keep="last").sort_values(by=dedup_keys)
-    combined_df.to_parquet(parquet_path, index=False)
+        combined = new_df
+    combined = combined.drop_duplicates(subset=dedup_keys, keep="last").sort_values(by=dedup_keys)
+    combined.to_parquet(parquet_path, index=False)
 
 
-def save_raw_json(base_dir: Path, kind: str, race_date: str, place_code: int,
-                  race_no: Optional[int], data: Any) -> None:
+def save_raw_json(base_dir: Path, kind: str, race_date: str, place_code: int, race_no: Optional[int], data: Any) -> None:
     suffix = f"r{race_no:02d}" if race_no is not None else "daily"
     out_path = base_dir / "raw" / kind / race_date[:4] / race_date / f"p{place_code}_{suffix}.json"
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -117,14 +122,8 @@ def save_raw_json(base_dir: Path, kind: str, race_date: str, place_code: int,
 
 
 def fetch_race_kinds(
-    client: AutoraceClient,
-    needed_kinds: Set[str],
-    place_code: int,
-    date_str: str,
-    race_no: int,
-    snapshot: str,
-    data_dir: Path,
-    save_raw: bool,
+    client: AutoraceClient, needed_kinds: Set[str], place_code: int, date_str: str, race_no: int,
+    snapshot: str, data_dir: Path, save_raw: bool,
 ) -> Tuple[List[dict], List[dict], List[dict], List[dict]]:
     prog_rows: List[dict] = []
     res_rows: List[dict] = []
@@ -152,17 +151,15 @@ def fetch_race_kinds(
             pass
 
     if "odds" in needed_kinds:
-        # 出走表・結果を問い合わせて両方空なら、そのレースは無いのでオッズは取りに行かない
-        asked = needed_kinds & {"program", "result"}
-        no_race = bool(asked) and not prog_rows and not res_rows
-        if not no_race:
+        # 出走表・結果を頼んでいて両方とも空なら、そのレースは無いとみなしてオッズは取りに行かない
+        asked_any = bool(needed_kinds & {"program", "result"})
+        if not asked_any or prog_rows or res_rows:
             try:
                 resp = client.odds(place_code, date_str, race_no)
                 if save_raw:
                     save_raw_json(data_dir, "odds", date_str, place_code, race_no, resp)
                 o_entries, op_entries, unknown_raw = parse_odds_body(
-                    place_code, date_str, race_no, resp.get("body") or {}, snapshot=snapshot
-                )
+                    place_code, date_str, race_no, resp.get("body") or {}, snapshot=snapshot)
                 odds_rows = [e.model_dump() for e in o_entries]
                 odds_player_rows = [e.model_dump() for e in op_entries]
                 if unknown_raw and not save_raw:
@@ -173,7 +170,7 @@ def fetch_race_kinds(
     return prog_rows, res_rows, odds_rows, odds_player_rows
 
 
-def write_rows(data_dir: Path, d: datetime.date, rows: Dict[str, List[dict]]) -> None:
+def flush(data_dir: Path, d: datetime.date, rows: Dict[str, List[dict]]) -> None:
     for folder, recs in rows.items():
         if recs:
             append_to_parquet(get_parquet_path(data_dir, folder, d), recs, DEDUP_KEYS_MAP[folder])
@@ -184,13 +181,10 @@ def main() -> None:
     args = parse_args()
     places = parse_places(args.places)
     kinds = parse_kinds(args.kinds)
-    dates = date_range(args.start, args.end)
     client = AutoraceClient(min_interval=args.interval)
-
     done_cache: Dict[Path, Set[str]] = {}
-    time_limit_reached = False
 
-    for d in dates:
+    for d in date_range(args.start, args.end):
         date_str = d.isoformat()
         done_path = get_done_path(args.data_dir, d)
         if done_path not in done_cache:
@@ -198,9 +192,8 @@ def main() -> None:
 
         for place_code in places:
             if args.max_minutes is not None and (time.monotonic() - start_monotonic) / 60.0 >= args.max_minutes:
-                logger.info("Reached --max-minutes. Stopping gracefully before date=%s place=%d", date_str, place_code)
-                time_limit_reached = True
-                break
+                logger.info("Reached --max-minutes. Stopping gracefully before %s place=%d", date_str, place_code)
+                return
 
             needed_kinds = {k for k in kinds if f"{date_str},{place_code},{k}" not in done_cache[done_path]}
             if not needed_kinds:
@@ -213,10 +206,8 @@ def main() -> None:
             if per_race_kinds:
                 for race_no in range(1, 13):
                     pr, rr, orows, oprows = fetch_race_kinds(
-                        client, per_race_kinds, place_code, date_str, race_no,
-                        args.snapshot, args.data_dir, args.save_raw,
-                    )
-                    if not pr and not rr and not orows and not oprows:
+                        client, per_race_kinds, place_code, date_str, race_no, args.snapshot, args.data_dir, args.save_raw)
+                    if not (pr or rr or orows or oprows):
                         if race_no == 1:
                             logger.info("No race held: date=%s place=%d", date_str, place_code)
                         break
@@ -229,24 +220,22 @@ def main() -> None:
             if "refund" in needed_kinds and (race_held or not per_race_kinds):
                 try:
                     resp = client.race_refund(place_code, date_str)
-                    # 払戻の形は推測パーサなので、生JSONは常に残す（1場1日1ファイルで小さい）
-                    save_raw_json(args.data_dir, "refund", date_str, place_code, None, resp)
-                    ref_entries, _unparsed = parse_refund_body(place_code, date_str, resp.get("body"))
+                    if args.save_raw:
+                        save_raw_json(args.data_dir, "refund", date_str, place_code, None, resp)
+                    ref_entries, unparsed = parse_refund_body(place_code, date_str, resp.get("body"))
                     rows["refund"] += [e.model_dump() for e in ref_entries]
+                    if unparsed and not args.save_raw:
+                        save_raw_json(args.data_dir, "refund_unparsed", date_str, place_code, None, unparsed)
                 except AutoraceAPIError:
                     pass
 
-            # 場ごとに書き込んでから完了印を付ける（途中で止まっても取りこぼさない。レビューで修正）
-            write_rows(args.data_dir, d, rows)
+            # 書き込んでから完了印（レビューで変更）
+            flush(args.data_dir, d, rows)
             mark_done(done_path, done_cache[done_path], date_str, place_code, needed_kinds)
-            logger.info(
-                "Completed date=%s place=%d (prog=%d res=%d odds=%d odds_p=%d refund=%d)",
-                date_str, place_code, len(rows["program"]), len(rows["race_result"]),
-                len(rows["odds"]), len(rows["odds_player"]), len(rows["refund"]),
-            )
-
-        if time_limit_reached:
-            break
+            if race_held:
+                logger.info("Done date=%s place=%d (prog=%d res=%d odds=%d odds_p=%d refund=%d)",
+                            date_str, place_code, len(rows["program"]), len(rows["race_result"]),
+                            len(rows["odds"]), len(rows["odds_player"]), len(rows["refund"]))
 
 
 if __name__ == "__main__":
