@@ -109,7 +109,9 @@ class AutoraceClient:
                 if resp.status_code >= 500 or resp.status_code == 429:
                     raise requests.HTTPError(f"Server error: HTTP {resp.status_code}", response=resp)
 
-                resp.raise_for_status()
+                if 400 <= resp.status_code < 500:
+                    # 404などはやり直しても変わらないので、すぐに失敗として扱う
+                    raise AutoraceAPIError(f"HTTP {resp.status_code} for {path}")
                 data = resp.json()
 
                 if not isinstance(data, dict):
@@ -140,7 +142,15 @@ class AutoraceClient:
         raise RuntimeError(f"Unreachable retry loop exit for {path}")
 
     def hold_today(self) -> Dict[str, Any]:
-        return self._post("/race_info/XML/Hold/Today")
+        # 開催情報はGET（ブラウザの通信で確認済み）。POSTだと404になる。
+        self._wait_rate_limit()
+        resp = self.session.get(f"{self.BASE_URL}/race_info/XML/Hold/Today", timeout=self.timeout)
+        self._last_request_time = time.monotonic()
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("result") == "Failure":
+            raise AutoraceAPIError("API returned Failure for Hold/Today", errors=data.get("errors"), response_data=data)
+        return data
 
     def program(self, place_code: int, race_date: str, race_no: int) -> Dict[str, Any]:
         payload = {"placeCode": place_code, "raceDate": race_date, "raceNo": race_no}
