@@ -4,7 +4,9 @@ on:
   schedule:
     - cron: "0 1 * * *"
   workflow_dispatch:
-concurrency: { group: autorace-fetch, cancel-in-progress: false }
+# 過去データ取得（autorace-fetch）とは別にして待たされないようにする。終わったら答え合わせを起動する
+concurrency: { group: autorace-daily, cancel-in-progress: false }
+permissions: { contents: read, actions: write }
 jobs:
   daily-fetch:
     runs-on: ubuntu-latest
@@ -33,3 +35,6 @@ jobs:
       - name: Driveへ保存
         if: always()
         run: '[ -d data ] && rclone copy data gdrive:autorace-predictor/data || true'
+      - name: 答え合わせを起動
+        env: { GH_TOKEN: "${{ github.token }}" }
+        run: gh api -X POST "repos/${{ github.repository }}/actions/workflows/daily-settle.yml/dispatches" -f ref=main -f "inputs[date]=${{ steps.target.outputs.date }}"

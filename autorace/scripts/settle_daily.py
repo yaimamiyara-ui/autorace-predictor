@@ -232,6 +232,11 @@ def run_settle_daily(data_dir: Path, target_date: str) -> int:
     hist = results[results["race_date"] < target_date] if not results.empty else results
     day_res = results[results["race_date"] == target_date].merge(races, on=RACE_KEYS) if not results.empty else results
 
+    if day_res.empty:
+        # 結果がまだ取得されていない日は答え合わせしない（外れ扱いで記録してしまうのを防ぐ）
+        logger.warning("date=%s: 結果が未取得のため答え合わせを見送り", target_date)
+        return 0
+
     def day_table(name):
         df = normalize_race_keys(load_parquet_table(data_dir, name, end_date=target_date, start_date=target_date))
         return df[df["race_date"] == target_date].merge(races, on=RACE_KEYS) if not df.empty else df

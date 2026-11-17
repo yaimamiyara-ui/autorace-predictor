@@ -1,8 +1,9 @@
 name: daily-settle
-# 毎朝の答え合わせ（Gemini作成、Claude確認：PYTHONPATH 追加、rclone を公式スクリプトで導入）。JST 11:30
+# 答え合わせ（Gemini作成、Claude確認）。前日分の取得（daily-fetch）が終わった直後に起動される。
+# 定期実行は保険（JST 15:30）。結果が未取得なら見送る。
 on:
   schedule:
-    - cron: "30 2 * * *"
+    - cron: "30 6 * * *"
   workflow_dispatch:
     inputs:
       date: { description: "対象日 (YYYY-MM-DD)。省略時はJSTの前日", required: false, type: string }

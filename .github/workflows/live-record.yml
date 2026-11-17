@@ -1,14 +1,17 @@
 name: live-record
 # 試走発表後のオッズを記録し続ける（Gemini作成、Claude確認）。JST 10:00〜翌00:59 に10分おき。
+# GitHubの定期実行は混雑で数時間遅れ・間引かれるため、1回の実行の中で10分おきに繰り返し、
+# 終わる前に自分自身を次の実行として起動する（JST 10:00〜翌00:59 の間だけ）。定期実行は起動の保険。
 on:
   schedule:
-    - cron: "*/10 1-15 * * *"
+    - cron: "3 1,3,5,7,9,11,13 * * *"
   workflow_dispatch:
+permissions: { contents: read, actions: write }
 concurrency: { group: autorace-live, cancel-in-progress: false }
 jobs:
   record:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 350
     env: { PYTHONPATH: "." }
     steps:
       - uses: actions/checkout@v4
@@ -22,13 +25,19 @@ jobs:
           mkdir -p ~/.config/rclone && chmod 700 ~/.config/rclone
           printf '%s\n' "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
           chmod 600 ~/.config/rclone/rclone.conf
-      - name: 開催月のデータをDriveから取得
+      - name: 10分おきに記録して保存（約5時間半）
+        env: { GH_TOKEN: "${{ github.token }}" }
         run: |
-          Y=$(TZ=Asia/Tokyo date -d '5 hours ago' +%Y); YM=$(TZ=Asia/Tokyo date -d '5 hours ago' +%Y-%m)
-          echo "INC=--include /odds_pre/$Y/$YM.parquet --include /program_pre/$Y/$YM.parquet --include /live_meta/$Y/$YM.parquet" >> "$GITHUB_ENV"
-          rclone copy gdrive:autorace-predictor/data data --include "/odds_pre/$Y/$YM.parquet" --include "/program_pre/$Y/$YM.parquet" --include "/live_meta/$Y/$YM.parquet" || true
-      - name: 記録
-        run: python -m autorace.scripts.live_record
-      - name: Driveへ保存
-        if: always()
-        run: '[ -d data ] && rclone copy data gdrive:autorace-predictor/data $INC || true'
+          in_window() { h=$(TZ=Asia/Tokyo date +%-H); [ "$h" -ge 10 ] || [ "$h" -lt 1 ]; }
+          START=$(date +%s)
+          while in_window && [ $(( $(date +%s) - START )) -lt 19800 ]; do
+            Y=$(TZ=Asia/Tokyo date -d '5 hours ago' +%Y); YM=$(TZ=Asia/Tokyo date -d '5 hours ago' +%Y-%m)
+            INC="--include /odds_pre/$Y/$YM.parquet --include /program_pre/$Y/$YM.parquet --include /live_meta/$Y/$YM.parquet"
+            rclone copy gdrive:autorace-predictor/data data $INC || true
+            python -m autorace.scripts.live_record || echo "記録でエラー（次の回で再試行）"
+            rclone copy data gdrive:autorace-predictor/data $INC || true
+            sleep $(( 600 - $(date +%s) % 600 + 20 ))
+          done
+          if in_window; then
+            gh api -X POST "repos/${{ github.repository }}/actions/workflows/live-record.yml/dispatches" -f ref=main && echo "次の実行を起動"
+          fi
