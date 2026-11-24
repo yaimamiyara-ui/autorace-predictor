@@ -9,6 +9,9 @@ on:
       end: { description: "学習に使う最終日 (YYYY-MM-DD、空なら前日)", required: false, type: string }
       train_months: { description: "学習期間（月）", required: false, default: "12", type: string }
 concurrency: { group: autorace-model, cancel-in-progress: false }
+permissions:
+  contents: read
+
 jobs:
   train:
     runs-on: ubuntu-latest

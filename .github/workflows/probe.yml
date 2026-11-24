@@ -4,6 +4,9 @@ on:
   push:
     paths: ["autorace/scripts/probe.py"]
 concurrency: { group: autorace-probe, cancel-in-progress: true }
+permissions:
+  contents: read
+
 jobs:
   probe:
     runs-on: ubuntu-latest
