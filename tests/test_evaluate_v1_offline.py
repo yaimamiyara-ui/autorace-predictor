@@ -137,6 +137,7 @@ class TestEvaluateV1:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason="top1_hit_rate merges top1 with act on RACE_KEYS without filtering to merged_hit races",
     )
     def test_compute_rt3_logloss_and_hit_missing_actual_combo_race_set_mismatch(self) -> None:
@@ -271,6 +272,7 @@ class TestCombosAndV1PureHelpers:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=AssertionError,
         reason="actual_rt3 uses pivot_table(..., aggfunc='first'), so dead heats depend on input row order",
     )
     def test_actual_rt3_dead_heat_is_row_order_independent(self) -> None:

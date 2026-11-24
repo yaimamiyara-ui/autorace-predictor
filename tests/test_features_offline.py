@@ -258,6 +258,7 @@ class TestFeaturesV1:
 
     @pytest.mark.xfail(
         strict=True,
+        raises=KeyError,
         reason="build_features returns empty program without v0 columns (e.g. is_absent), causing KeyError in build_features_v1",
     )
     def test_build_features_v1_empty_program_returns_empty_dataframe(self) -> None:
