@@ -8,6 +8,9 @@ on:
       places: { description: "場コード（カンマ区切り）", required: false, default: "2,3,4,5,6", type: string }
       kinds: { description: "取得する種類", required: false, default: "program,result,odds,refund", type: string }
 concurrency: { group: autorace-fetch, cancel-in-progress: false }
+permissions:
+  contents: read
+
 jobs:
   backfill:
     runs-on: ubuntu-latest

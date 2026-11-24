@@ -8,6 +8,9 @@ on:
     inputs:
       date: { description: "対象日 (YYYY-MM-DD、カンマ区切りで複数可)。省略時はJSTの前日", required: false, type: string }
 concurrency: { group: autorace-settle, cancel-in-progress: false }
+permissions:
+  contents: read
+
 jobs:
   settle:
     runs-on: ubuntu-latest

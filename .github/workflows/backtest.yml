@@ -6,6 +6,9 @@ on:
       start: { description: "検証開始日 (YYYY-MM-DD)", required: true, type: string }
       end: { description: "検証終了日 (YYYY-MM-DD)", required: true, type: string }
 concurrency: { group: autorace-model, cancel-in-progress: false }
+permissions:
+  contents: read
+
 jobs:
   backtest:
     runs-on: ubuntu-latest

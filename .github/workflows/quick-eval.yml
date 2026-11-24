@@ -3,6 +3,9 @@ name: quick-eval
 on:
   workflow_dispatch:
 concurrency: { group: autorace-model, cancel-in-progress: false }
+permissions:
+  contents: read
+
 jobs:
   eval:
     runs-on: ubuntu-latest
