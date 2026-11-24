@@ -208,3 +208,61 @@ class TestFeaturesV1:
         assert list(out["race_max_handicap_span"]) == [10.0, 10.0, 10.0]
         assert out.loc[0, "rel_handicap"] == pytest.approx(0.0)
         assert out.loc[1, "rel_handicap"] == pytest.approx(1.0)
+
+    def test_build_features_v1_uses_only_prerace_info_no_postrace_leakage(self) -> None:
+        prog = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-02", "race_no": 1, "car_no": 1, "player_code": 9001,
+             "handicap": 0, "trial_run_time": 3.30, "trial_retry_code": "0", "absent": None, "rank": "S-1"},
+            {"place_code": 2, "race_date": "2026-11-02", "race_no": 1, "car_no": 2, "player_code": 9002,
+             "handicap": 10, "trial_run_time": 3.35, "trial_retry_code": "0", "absent": None, "rank": "A-5"},
+        ])
+        hist = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "player_code": 9001,
+             "trial_time": 3.32, "race_time": 3.40, "st": 0.12, "order": 1, "accident_code": None},
+        ])
+        # Pre-race values: road_temp=20.0, situation_code=0 (good track), temp=18.0, humid=50.0, weather="晴"
+        # Post-race race_* values differ sharply: race_road_temp=45.0, race_situation_code=2 (wet), etc.
+        info_a = pd.DataFrame([
+            {
+                "place_code": 2, "race_date": "2026-11-01", "race_no": 1,
+                "distance": 3100, "situation_code": 0, "temp": 18.0, "humid": 50.0, "road_temp": 20.0, "weather": "晴",
+                "race_situation_code": 2, "race_temp": 9.0, "race_humid": 95.0, "race_road_temp": 45.0, "race_weather": "雨",
+                "grade_code": 1, "paragraph_day": 1, "period_start_date": "2026-11-01", "race_name": "予選", "final_race_no": 12,
+            },
+            {
+                "place_code": 2, "race_date": "2026-11-02", "race_no": 1,
+                "distance": 3100, "situation_code": 0, "temp": 18.0, "humid": 50.0, "road_temp": 20.0, "weather": "晴",
+                "race_situation_code": 2, "race_temp": 9.0, "race_humid": 95.0, "race_road_temp": 45.0, "race_weather": "雨",
+                "grade_code": 1, "paragraph_day": 2, "period_start_date": "2026-11-01", "race_name": "準決勝戦", "final_race_no": 12,
+            },
+        ])
+        # Mutate post-race race_* columns completely and verify features are identical
+        info_b = info_a.copy()
+        info_b["race_road_temp"] = 99.0
+        info_b["race_situation_code"] = 0
+        info_b["race_temp"] = -5.0
+        info_b["race_humid"] = 10.0
+        info_b["race_weather"] = "雪"
+
+        out_a = build_features_v1(prog, race_info=info_a, race_result_hist=hist)
+        out_b = build_features_v1(prog, race_info=info_b, race_result_hist=hist)
+
+        # Confirm pre-race values reached the features (not post-race race_* values)
+        assert list(out_a["road_temp_clean"]) == [20.0, 20.0]
+        assert list(out_a["road_temp_x_handicap"]) == [0.0, 200.0]
+        assert list(out_a["is_non_good_track"]) == [0.0, 0.0]
+        assert list(out_a["prior_wet_races"]) == [0.0, 0.0]
+        for r_col in ("race_road_temp", "race_situation_code", "race_temp", "race_humid", "race_weather"):
+            assert r_col not in out_a.columns
+        pd.testing.assert_frame_equal(out_a[FEATURE_COLS], out_b[FEATURE_COLS])
+
+    @pytest.mark.xfail(
+        strict=True,
+        reason="build_features returns empty program without v0 columns (e.g. is_absent), causing KeyError in build_features_v1",
+    )
+    def test_build_features_v1_empty_program_returns_empty_dataframe(self) -> None:
+        empty_prog = pd.DataFrame(
+            columns=["place_code", "race_date", "race_no", "car_no", "player_code", "handicap", "trial_run_time", "absent", "rank"]
+        )
+        out = build_features_v1(empty_prog, race_info=None, race_result_hist=None)
+        assert out.empty

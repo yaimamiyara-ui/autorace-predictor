@@ -115,17 +115,44 @@ class TestFitMarketGamma:
         odds = pd.DataFrame([
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "bet_type": "tns", "combo": "1", "odds": 1.5},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "bet_type": "tns", "combo": "2", "odds": 4.5},
-            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "bet_type": "tns", "combo": "1", "odds": 2.0},
-            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "bet_type": "tns", "combo": "2", "odds": 2.0},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "bet_type": "tns", "combo": "1", "odds": 1.5},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "bet_type": "tns", "combo": "2", "odds": 4.5},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 3, "bet_type": "tns", "combo": "1", "odds": 1.5},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 3, "bet_type": "tns", "combo": "2", "odds": 4.5},
         ])
         res = pd.DataFrame([
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 2},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 1, "order": 1},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 2, "order": 2},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 3, "car_no": 1, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 3, "car_no": 2, "order": 2},
         ])
-        g = fit_market_gamma(odds, res, bounds=(0.2, 2.5))
-        assert 0.2 <= g <= 2.5
+        # Independent NLL calculation: for each race, odds are (1.5, 4.5) and car 1 always wins.
+        # p1(gamma) = (1/1.5)^gamma / ((1/1.5)^gamma + (1/4.5)^gamma) = 1 / (1 + 3^{-gamma})
+        def manual_nll(g_val: float) -> float:
+            w1 = (1.0 / 1.5) ** g_val
+            w2 = (1.0 / 4.5) ** g_val
+            p1 = w1 / (w1 + w2)
+            return float(-np.log(p1))
+
+        g_high = fit_market_gamma(odds, res, bounds=(0.2, 2.5))
+        assert 1.0 < g_high <= 2.5
+        assert manual_nll(g_high) < manual_nll(1.0)
+
+        # When the underdog (car 2, odds 4.5) always wins, optimum gamma is < 1.0
+        res_underdog = res.copy()
+        res_underdog["order"] = [2, 1, 2, 1, 2, 1]
+
+        def manual_nll_underdog(g_val: float) -> float:
+            w1 = (1.0 / 1.5) ** g_val
+            w2 = (1.0 / 4.5) ** g_val
+            p2 = w2 / (w1 + w2)
+            return float(-np.log(p2))
+
+        g_low = fit_market_gamma(odds, res_underdog, bounds=(0.2, 2.5))
+        assert 0.2 <= g_low < 1.0
+        assert manual_nll_underdog(g_low) < manual_nll_underdog(1.0)
 
 
 class TestMarketRt3Probs:
