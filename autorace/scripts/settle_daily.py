@@ -1,7 +1,12 @@
 """毎朝の答え合わせ（Gemini作成、Claude確認・修正）。
 
-前日に記録した直前データ（program_pre / odds_pre）で v0 の予想と推奨（記録のみ、購入はしない）を作り、
+前日に記録した直前データ（program_pre / odds_pre）で予想と推奨（記録のみ、購入はしない）を作り、
 結果・払戻・確定オッズと照らし合わせて成績表とダッシュボードを更新する。
+
+予想は data/models/live に本番用の v1 と合成の重み（fit_live_model.py が作る）があれば
+「v1 と市場（直前の単勝オッズ）の合成(b)」を使い、推奨は 期待値1.3以上・オッズ100倍以下・1レース1点。
+無い（または予想を作れない）ときは従来の v0 と 期待値1.2以上・500倍以下・1レース5点 を使う。
+どちらを使ったかは成績表の model 列に残す。
 
 修正点（Claudeのレビュー）：
 - 場コードと場名の対応を修正（1=船橋, 2=川口, 3=伊勢崎, 4=浜松, 5=飯塚, 6=山陽）
@@ -21,9 +26,13 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
+from autorace.model.blend import BenterBlend
 from autorace.model.combos import generate_rt3_combos
 from autorace.model.evaluate import evaluate_predictions
+from autorace.model.features_v1 import build_features_v1
+from autorace.model.market import market_win_probs, pick_snapshot
 from autorace.model.v0 import BaselineModelV0
+from autorace.model.v1 import ThreeStageModel
 from autorace.scripts.backtest_v0 import actual_rt3, load_parquet_table
 
 logger = logging.getLogger(__name__)
@@ -31,6 +40,9 @@ logger = logging.getLogger(__name__)
 JST = timezone(timedelta(hours=9))
 RACE_KEYS = ["place_code", "race_date", "race_no"]
 MIN_EV, MIN_PROB, MAX_ODDS, MAX_RECS_PER_RACE = 1.2, 0.01, 500.0, 5
+# 本番用 v1＋合成(b) の推奨条件（eval_blend の試算で回収率が最も良かった組み合わせ）
+V1_MIN_EV, V1_MIN_PROB, V1_MAX_ODDS, V1_MAX_RECS_PER_RACE = 1.3, 0.005, 100.0, 1
+FEATURE_LOOKBACK_DAYS = 400
 PLACE_NAMES = {1: "船橋", 2: "川口", 3: "伊勢崎", 4: "浜松", 5: "飯塚", 6: "山陽"}
 
 
@@ -62,8 +74,10 @@ def select_earliest_snapshot(df: pd.DataFrame, dedup_keys: list[str]) -> pd.Data
     return out.drop_duplicates(subset=keys, keep="first").reset_index(drop=True) if keys else out.reset_index(drop=True)
 
 
-def select_recommendations(combos_df: pd.DataFrame, odds_pre_df: pd.DataFrame) -> pd.DataFrame:
-    """期待値（確率×直前オッズ）が閾値以上の3連単を、各レース最大5つ推奨にする（記録のみ）"""
+def select_recommendations(combos_df: pd.DataFrame, odds_pre_df: pd.DataFrame, min_ev: float = MIN_EV,
+                           min_prob: float = MIN_PROB, max_odds: float = MAX_ODDS,
+                           max_per_race: int = MAX_RECS_PER_RACE) -> pd.DataFrame:
+    """期待値（確率×直前オッズ）が閾値以上の3連単を、各レース最大 max_per_race 点推奨にする（記録のみ）"""
     cols = RACE_KEYS + ["bet_type", "combo", "combo_prob", "pre_odds", "ev"]
     if combos_df.empty or odds_pre_df.empty:
         return pd.DataFrame(columns=cols)
@@ -75,11 +89,11 @@ def select_recommendations(combos_df: pd.DataFrame, odds_pre_df: pd.DataFrame) -
     m = combos.merge(odds, on=RACE_KEYS + ["combo"], how="inner")
     m["pre_odds"] = pd.to_numeric(m["pre_odds"], errors="coerce")
     m["ev"] = m["combo_prob"] * m["pre_odds"]
-    m = m[(m["combo_prob"] >= MIN_PROB) & (m["pre_odds"] > 0) & (m["pre_odds"] <= MAX_ODDS) & (m["ev"] >= MIN_EV)]
+    m = m[(m["combo_prob"] >= min_prob) & (m["pre_odds"] > 0) & (m["pre_odds"] <= max_odds) & (m["ev"] >= min_ev)]
     if m.empty:
         return pd.DataFrame(columns=cols)
     m = m.sort_values(RACE_KEYS + ["ev", "combo_prob", "combo"], ascending=[True, True, True, False, False, True], kind="mergesort")
-    return m.groupby(RACE_KEYS, sort=False).head(MAX_RECS_PER_RACE)[cols].reset_index(drop=True)
+    return m.groupby(RACE_KEYS, sort=False).head(int(max_per_race))[cols].reset_index(drop=True)
 
 
 def settle_recommendations(recs_df, result_df, refund_df, final_odds_df) -> pd.DataFrame:
@@ -199,7 +213,8 @@ def generate_dashboard_html(tracker_dir: Path) -> Path:
     rows = []
     for _, r in summary.sort_values("race_date", ascending=False).head(30).iterrows():
         ll = "" if pd.isna(r["log_loss"]) else f"{r['log_loss']:.3f}"
-        rows.append(tr([r["race_date"], int(r["num_races"]), ll, int(r["num_recs"]), int(r["num_hits"]), f"{r['roi']:.0%}" if r["num_recs"] else "-"]))
+        mdl = r.get("model") if isinstance(r.get("model"), str) and r.get("model") else "v0"
+        rows.append(tr([r["race_date"], mdl, int(r["num_races"]), ll, int(r["num_recs"]), int(r["num_hits"]), f"{r['roi']:.0%}" if r["num_recs"] else "-"]))
     place_rows = []
     if n_rec:
         for pc, g in recs.groupby("place_code"):
@@ -209,16 +224,56 @@ def generate_dashboard_html(tracker_dir: Path) -> Path:
 <title>オートレース予想 答え合わせ</title><style>body{{font-family:sans-serif;max-width:760px;margin:auto;padding:12px;color:#222}}
 table{{border-collapse:collapse;width:100%;margin:8px 0 20px}}td,th{{border-bottom:1px solid #eee;padding:4px 6px;text-align:right;font-size:14px}}
 td:first-child,th:first-child{{text-align:left}}.k{{display:inline-block;margin:0 18px 10px 0}}.k b{{font-size:22px;display:block}}</style></head><body>
-<h1>オートレース予想 答え合わせ（v0）</h1><p>推奨は記録のみ（購入していません）。1点100円で買ったと仮定した成績です。</p>
+<h1>オートレース予想 答え合わせ</h1><p>推奨は記録のみ（購入していません）。1点100円で買ったと仮定した成績です。</p>
 <div class="k">累計の推奨<b>{n_rec}点</b></div><div class="k">的中<b>{hits}点</b></div><div class="k">回収率<b>{roi:.0%}</b></div>
 <div class="k">推奨時→確定のオッズ変化<b>{(chg.median() if len(chg) else 0):+.0%}</b></div>
-<h2>日別</h2><table><tr><th>日付</th><th>レース</th><th>LogLoss</th><th>推奨</th><th>的中</th><th>回収率</th></tr>{''.join(rows)}</table>
+<h2>日別</h2><table><tr><th>日付</th><th>予想</th><th>レース</th><th>LogLoss</th><th>推奨</th><th>的中</th><th>回収率</th></tr>{''.join(rows)}</table>
 <h2>場別</h2><table><tr><th>場</th><th>推奨</th><th>的中</th><th>回収率</th></tr>{''.join(place_rows)}</table>
 <h2>確率の正確さ（20区間）</h2>{_calibration_svg(preds)}
 <p style="color:#888;font-size:12px">更新：{datetime.now(JST):%Y-%m-%d %H:%M}</p></body></html>"""
     out = tracker_dir / "dashboard.html"
     out.write_text(page, encoding="utf-8")
     return out
+
+
+def load_live_model(data_dir: Path) -> tuple[ThreeStageModel, BenterBlend] | None:
+    """data/models/live に本番用の v1 と合成の重みがあれば読む。無ければ None。"""
+    base = Path(data_dir) / "models" / "live"
+    if not (base / "blend.json").exists() or not (base / "model" / "meta.json").exists():
+        return None
+    return ThreeStageModel.load(base / "model"), BenterBlend.load(base / "blend.json")
+
+
+def predict_v1_blend(data_dir: Path, target_date: str, races: pd.DataFrame, program_day: pd.DataFrame,
+                     odds_pre_day: pd.DataFrame, model: ThreeStageModel, blend: BenterBlend) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """v1 と直前の単勝オッズの合成(b)で、1着確率と3連単の確率を作る。特徴量は前日までの結果だけを使う。"""
+    start = (pd.Timestamp(target_date) - pd.Timedelta(days=FEATURE_LOOKBACK_DAYS)).strftime("%Y-%m-%d")
+    program = normalize_race_keys(load_parquet_table(data_dir, "program", end_date=target_date, start_date=start))
+    if program.empty:
+        raise ValueError("program is empty")
+    program = program[program["race_date"] <= target_date]
+    if program[program["race_date"] == target_date].empty:
+        # 当日の出走表が無ければ直前に記録した出走表を使う
+        program = pd.concat([program, program_day], ignore_index=True)
+    info = load_parquet_table(data_dir, "race_info", end_date=target_date, start_date=start)
+    res = normalize_race_keys(load_parquet_table(data_dir, "race_result", end_date=target_date, start_date=start))
+    hist = res[res["race_date"] < target_date] if not res.empty else res
+    feat = normalize_race_keys(build_features_v1(program, info if not info.empty else None, hist if not hist.empty else None))
+    day = feat[feat["race_date"] == target_date].merge(races, on=RACE_KEYS)
+    act = day[~day["is_absent"].fillna(False).astype(bool)]
+    if act.empty:
+        raise ValueError("no runners for the target day")
+    pre = normalize_race_keys(odds_pre_day)
+    pre = pre[pre["snapshot"] == "pre"] if "snapshot" in pre.columns else pre
+    mw = market_win_probs(pick_snapshot(pre, how="earliest"))
+    if mw.empty:
+        raise ValueError("no pre-race win odds")
+    v1_win = model.predict_win(act)
+    win = normalize_race_keys(blend.predict_win(v1_win, mw))
+    rt3 = normalize_race_keys(blend.predict_rt3_conditional(model, act, mw, v1_win))
+    if win.empty or rt3.empty:
+        raise ValueError("blend produced no predictions")
+    return win, rt3
 
 
 def run_settle_daily(data_dir: Path, target_date: str) -> int:
@@ -244,8 +299,24 @@ def run_settle_daily(data_dir: Path, target_date: str) -> int:
         df = normalize_race_keys(load_parquet_table(data_dir, name, end_date=target_date, start_date=target_date))
         return df[df["race_date"] == target_date].merge(races, on=RACE_KEYS) if not df.empty else df
 
-    pred = normalize_race_keys(BaselineModelV0().predict_historical(program_day, hist)).merge(races, on=RACE_KEYS)
-    recs = select_recommendations(normalize_race_keys(generate_rt3_combos(pred)), day_table("odds_pre"))
+    odds_pre_day = day_table("odds_pre")
+    model_name = "v0"
+    live = load_live_model(data_dir)
+    pred = rt3 = None
+    if live is not None and not odds_pre_day.empty:
+        try:
+            pred, rt3 = predict_v1_blend(data_dir, target_date, races, program_day, odds_pre_day, *live)
+            pred = pred.merge(races, on=RACE_KEYS)
+            model_name = "v1_blend"
+        except Exception as e:  # 本番用の予想を作れない日は v0 で続ける（記録を止めない）
+            logger.warning("date=%s: v1 合成の予想を作れないため v0 を使う（%s: %s）", target_date, type(e).__name__, e)
+            pred = rt3 = None
+    if model_name == "v1_blend":
+        recs = select_recommendations(rt3, odds_pre_day, min_ev=V1_MIN_EV, min_prob=V1_MIN_PROB,
+                                      max_odds=V1_MAX_ODDS, max_per_race=V1_MAX_RECS_PER_RACE)
+    else:
+        pred = normalize_race_keys(BaselineModelV0().predict_historical(program_day, hist)).merge(races, on=RACE_KEYS)
+        recs = select_recommendations(normalize_race_keys(generate_rt3_combos(pred)), odds_pre_day)
     settled = settle_recommendations(recs, day_res, day_table("refund"), day_table("odds"))
     preds_tbl = build_predictions_table(pred, day_res)
 
@@ -261,9 +332,9 @@ def run_settle_daily(data_dir: Path, target_date: str) -> int:
     upsert_monthly(tracker / "predictions", target_date, preds_tbl, RACE_KEYS + ["car_no"])
     upsert_monthly(tracker / "recommendations", target_date, settled, RACE_KEYS + ["combo"])
     upsert_daily_summary(tracker, {"race_date": target_date, "num_races": len(races), "log_loss": ll,
-                                   "brier_score": brier, "num_recs": n, "num_hits": hits, "roi": roi})
+                                   "brier_score": brier, "num_recs": n, "num_hits": hits, "roi": roi, "model": model_name})
     generate_dashboard_html(tracker)
-    logger.info("date=%s races=%d logloss=%.3f recs=%d hits=%d roi=%.2f", target_date, len(races), ll, n, hits, roi)
+    logger.info("date=%s model=%s races=%d logloss=%.3f recs=%d hits=%d roi=%.2f", target_date, model_name, len(races), ll, n, hits, roi)
     return 0
 
 
