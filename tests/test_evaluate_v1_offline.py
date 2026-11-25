@@ -18,6 +18,7 @@ from autorace.model.evaluate_v1 import (
 )
 from autorace.model.v1 import compute_group_softmax, fit_temperature, prepare_stage_dataset
 from autorace.scripts.backtest_v0 import actual_rt3
+from autorace.scripts.quick_eval_v1 import rt3_topn, win_summary, winners
 
 
 class TestEvaluateV1:
@@ -326,3 +327,110 @@ class TestCombosAndV1PureHelpers:
         pred.loc[pred["combo"] == "2-1-3", "combo_prob"] = 0.10
         _, hit2, _ = compute_rt3_logloss_and_hit(pred, res)
         assert hit2 == 1.0  # 1位の組 1-2-4 は当たり目の1つ
+
+    def test_quick_eval_winners_and_win_summary_dead_heat(self) -> None:
+        # 1着同着（1号車・2号車）のレースも winners() と win_summary() に含まれ、
+        # 確率の合計で LogLoss を計算し、確率1位が同着1着のどれかなら本命的中とする
+        res = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 3, "order": 3},
+        ])
+        w = winners(res)
+        assert sorted(w["win_car"].tolist()) == [1, 2]
+
+        pred = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "pred_prob": 0.25},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "pred_prob": 0.35},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 3, "pred_prob": 0.40},
+        ])
+        s_miss = win_summary(pred, "pred_prob", res)
+        assert s_miss["races"] == 1
+        assert s_miss["favorite_win_rate"] == 0.0  # 1位の3号車は1着ではない
+        assert s_miss["winner_avg_prob"] == pytest.approx(round(0.25 + 0.35, 4))
+        assert s_miss["win_logloss"] == pytest.approx(round(-math.log(0.25 + 0.35), 4))
+        assert sum(b["n"] for b in s_miss["calibration"]) == 3
+
+        # 確率1位が同着1着の2号車のとき、本命的中（favorite_win_rate == 1.0）
+        pred.loc[pred["car_no"] == 2, "pred_prob"] = 0.45
+        pred.loc[pred["car_no"] == 3, "pred_prob"] = 0.30
+        s_hit = win_summary(pred, "pred_prob", res)
+        assert s_hit["races"] == 1
+        assert s_hit["favorite_win_rate"] == 1.0
+        assert s_hit["winner_avg_prob"] == pytest.approx(round(0.25 + 0.45, 4))
+        assert s_hit["win_logloss"] == pytest.approx(round(-math.log(0.25 + 0.45), 4))
+
+    def test_duplicate_predictions_rejected_with_race_name(self) -> None:
+        res = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 2},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 3, "order": 3},
+        ])
+        dup_win = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "pred_prob": 0.5},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "pred_prob": 0.3},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "pred_prob": 0.2},
+        ])
+        with pytest.raises(ValueError, match=r"2026-11-01"):
+            compute_win_logloss(dup_win, res)
+        with pytest.raises(ValueError, match=r"2026-11-01"):
+            win_summary(dup_win, "pred_prob", res)
+
+        dup_rt3 = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "combo": "1-2-3", "combo_prob": 0.6},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "combo": "1-2-3", "combo_prob": 0.4},
+        ])
+        with pytest.raises(ValueError, match=r"2026-11-01"):
+            compute_rt3_logloss_and_hit(dup_rt3, res)
+        with pytest.raises(ValueError, match=r"2026-11-01"):
+            compute_rt3_ece(dup_rt3, res)
+        with pytest.raises(ValueError, match=r"2026-11-01"):
+            rt3_topn(dup_rt3, res)
+
+    def test_missing_winning_combos_excluded_across_all_metrics(self) -> None:
+        # Race 1 has winning combo "1-2-3" in predictions (rank 1).
+        # Race 2 is a 3rd-place dead heat ("2-1-3" and "2-1-4"), and BOTH winning combos are missing from predictions.
+        res = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 2},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 3, "order": 3},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 2, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 1, "order": 2},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 3, "order": 3},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 4, "order": 3},
+        ])
+        rt3_pred = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "combo": "1-2-3", "combo_prob": 0.60},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "combo": "1-3-2", "combo_prob": 0.40},
+            # Race 2 has predictions, but neither "2-1-3" nor "2-1-4" is present
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "combo": "1-2-3", "combo_prob": 0.55},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "combo": "3-2-1", "combo_prob": 0.45},
+        ])
+        ll, top1_hit, n_races = compute_rt3_logloss_and_hit(rt3_pred, res)
+        ece, bins = compute_rt3_ece(rt3_pred, res)
+        topn = rt3_topn(rt3_pred, res, ns=(1, 5))
+
+        # Race 2 is excluded from log loss, top-1 hit, top-N, and ECE alike
+        assert n_races == 1
+        assert ll == pytest.approx(-math.log(0.60))
+        assert top1_hit == pytest.approx(1.0)
+        assert topn["races"] == 1
+        assert topn["top1_hit_rate"] == pytest.approx(1.0)
+        assert topn["top5_hit_rate"] == pytest.approx(1.0)
+        assert topn["median_rank_of_actual"] == pytest.approx(1.0)
+        # ECE counts only the 2 combos of Race 1 (in the "10%以上" bin: mean_pred=0.5, actual_rate=0.5 -> gap=0.0)
+        assert sum(b["count"] for b in bins) == 2
+        assert ece == pytest.approx(0.0)
+
+        # Also verify win_summary excludes races whose winning car is missing from predictions
+        win_pred = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "pred_prob": 0.70},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "pred_prob": 0.30},
+            # Race 2 winner is car 2, which is missing from win_pred
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 1, "pred_prob": 0.80},
+        ])
+        ws = win_summary(win_pred, "pred_prob", res)
+        assert ws["races"] == 1
+        assert ws["favorite_win_rate"] == 1.0
+        assert ws["win_logloss"] == pytest.approx(round(-math.log(0.70), 4))
+        assert sum(b["n"] for b in ws["calibration"]) == 2

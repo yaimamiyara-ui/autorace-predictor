@@ -13,13 +13,24 @@ ECE_BIN_EDGES: list[float] = [0.00, 0.01, 0.02, 0.03, 0.04, 0.05, 0.06, 0.07, 0.
 ECE_BIN_LABELS: list[str] = ["0-1%", "1-2%", "2-3%", "3-4%", "4-5%", "5-6%", "6-7%", "7-8%", "8-9%", "9-10%", "10%以上"]
 
 
+def _check_unique_predictions(df: pd.DataFrame, item_col: str) -> None:
+    dup = df[df.duplicated(subset=RACE_KEYS + [item_col], keep=False)]
+    if not dup.empty:
+        r = dup.iloc[0]
+        race_id = f"{r['place_code']}_{r['race_date']}_R{r['race_no']} ({r['place_code']}, {r['race_date']}, {r['race_no']})"
+        raise ValueError(f"Duplicate prediction rows for race {race_id} on {item_col}={r[item_col]}")
+
+
 def compute_win_logloss(win_pred_df: pd.DataFrame, race_result: pd.DataFrame) -> tuple[float, int]:
     """レース単位の1着 LogLoss。戻り値: (logloss, レース数)
 
     設計書どおり、1着同着のレースは同着の選手すべてを1着として扱い、その確率の合計で評価する。
+    1着の車が予想に1台も含まれないレースは評価対象から除外する。
+    同じレースに同じ車番（car_no）の予想が重複している場合は ValueError を送出する。
     """
     if win_pred_df.empty or race_result.empty:
         return float("nan"), 0
+    _check_unique_predictions(win_pred_df, "car_no")
     res = race_result.copy()
     res["order_num"] = pd.to_numeric(res.get("order"), errors="coerce")
     winners = res[res["order_num"] == 1][RACE_KEYS + ["car_no"]].drop_duplicates()
@@ -38,11 +49,13 @@ def compute_rt3_logloss_and_hit(rt3_pred_df: pd.DataFrame, race_result: pd.DataF
     """3連単の当たり目の LogLoss と、確率1位の組の的中率。戻り値: (logloss, 的中率, レース数)
 
     同着で当たり目が複数あるレースは、当たり目の確率の合計で LogLoss を計算し、
-    確率1位の組がどれかの当たり目と一致すれば的中とする。どちらの指標も、当たり目が
-    予想に含まれるレースだけを同じ母数で数える。
+    確率1位の組がどれかの当たり目と一致すれば的中とする。当たり目が予想に1つも含まれない
+    レースは除外し、LogLoss・確率1位的中率・top-N・ECE のすべてで同じ母数を使う。
+    同じレースに同じ組（combo）の予想が重複している場合は ValueError を送出する。
     """
     if rt3_pred_df.empty or race_result.empty:
         return float("nan"), float("nan"), 0
+    _check_unique_predictions(rt3_pred_df, "combo")
     act = actual_rt3(race_result)
     if act.empty:
         return float("nan"), float("nan"), 0
@@ -67,16 +80,26 @@ def compute_rt3_logloss_and_hit(rt3_pred_df: pd.DataFrame, race_result: pd.DataF
 
 
 def compute_rt3_ece(rt3_pred_df: pd.DataFrame, race_result: pd.DataFrame) -> tuple[float, list[dict[str, Any]]]:
-    """3連単確率の ECE（0–1%,…,9–10%,10%以上 の11区間）と区間ごとの内訳。"""
+    """3連単確率の ECE（0–1%,…,9–10%,10%以上 の11区間）と区間ごとの内訳。
+
+    当たり目が予想に1つも含まれないレースは除外し、LogLoss・確率1位的中率・top-N と同じ
+    レース母数の予想行だけで計算する。同じレースに同じ組（combo）の予想が重複している場合は
+    ValueError を送出する。
+    """
     if rt3_pred_df.empty or race_result.empty:
         return float("nan"), []
+    _check_unique_predictions(rt3_pred_df, "combo")
     act = actual_rt3(race_result)
     if act.empty:
         return float("nan"), []
     act = act.drop_duplicates()
     act["_hit"] = 1.0
-    races = act[RACE_KEYS].drop_duplicates()
-    merged = (rt3_pred_df[RACE_KEYS + ["combo", "combo_prob"]].merge(races, on=RACE_KEYS, how="inner")
+    eval_races = act[RACE_KEYS + ["combo"]].merge(
+        rt3_pred_df[RACE_KEYS + ["combo"]], on=RACE_KEYS + ["combo"], how="inner"
+    )[RACE_KEYS].drop_duplicates()
+    if eval_races.empty:
+        return float("nan"), []
+    merged = (rt3_pred_df[RACE_KEYS + ["combo", "combo_prob"]].merge(eval_races, on=RACE_KEYS, how="inner")
               .merge(act, on=RACE_KEYS + ["combo"], how="left"))
     if merged.empty:
         return float("nan"), []
