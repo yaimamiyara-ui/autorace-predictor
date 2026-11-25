@@ -8,6 +8,7 @@ on:
     inputs:
       end: { description: "学習に使う最終日 (YYYY-MM-DD、空なら前日)", required: false, type: string }
       train_months: { description: "学習期間（月）", required: false, default: "12", type: string }
+      live_only: { description: "本番用の予想（models/live）だけ作る（時系列検証を省く）", required: false, default: false, type: boolean }
 concurrency: { group: autorace-model, cancel-in-progress: false }
 permissions:
   contents: read
@@ -20,6 +21,7 @@ jobs:
       PYTHONPATH: ${{ github.workspace }}
       END_INPUT: ${{ inputs.end }}
       TRAIN_MONTHS: ${{ inputs.train_months || '12' }}
+      LIVE_ONLY: ${{ inputs.live_only || false }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -34,11 +36,17 @@ jobs:
           printf "%s\n" "$RCLONE_CONFIG_CONTENT" > ~/.config/rclone/rclone.conf
           chmod 600 ~/.config/rclone/rclone.conf
       - name: Driveからデータを取得
-        run: rclone copy gdrive:autorace-predictor/data data --include "program/**" --include "race_result/**" --include "race_info/**"
+        run: rclone copy gdrive:autorace-predictor/data data --include "program/**" --include "race_result/**" --include "race_info/**" --include "odds/**"
       - name: 学習と検証
+        if: env.LIVE_ONLY != 'true'
         run: |
           END="${END_INPUT:-$(TZ=Asia/Tokyo date -d yesterday +%F)}"
           python -m autorace.scripts.train_v1 --data-dir data --out-dir out --end-date "$END" --train-months "$TRAIN_MONTHS"
+      - name: 本番用の予想（v1 と市場の合成）を作る
+        id: live
+        run: |
+          END="${END_INPUT:-$(TZ=Asia/Tokyo date -d yesterday +%F)}"
+          python -m autorace.scripts.fit_live_model --data-dir data --out-dir out --end-date "$END" --train-months "$TRAIN_MONTHS"
       - name: モデルと結果をDriveへ保存
         if: always()
         run: '[ -d out ] && rclone copy out gdrive:autorace-predictor/models || true'

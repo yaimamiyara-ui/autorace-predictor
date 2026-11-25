@@ -36,9 +36,11 @@ jobs:
           echo "TARGET_DATES=${DS//,/ }" >> "$GITHUB_ENV"
       - name: Driveからデータを取得
         run: |
-          for t in program race_result refund program_pre odds_pre tracker; do
+          for t in program race_result race_info refund program_pre odds_pre tracker; do
             rclone copy "gdrive:autorace-predictor/data/$t" "data/$t" || true
           done
+          # 本番用の予想（fit_live_model が作る）。無ければ settle_daily は v0 を使う
+          rclone copy "gdrive:autorace-predictor/models/live" "data/models/live" || true
           for D in $TARGET_DATES; do rclone copy "gdrive:autorace-predictor/data/odds/${D:0:4}/${D:0:7}.parquet" "data/odds/${D:0:4}/" || true; done
       - name: 答え合わせ
         run: for D in $TARGET_DATES; do python -m autorace.scripts.settle_daily --date "$D"; done
