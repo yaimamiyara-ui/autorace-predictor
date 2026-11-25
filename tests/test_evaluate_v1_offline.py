@@ -434,3 +434,22 @@ class TestCombosAndV1PureHelpers:
         assert ws["favorite_win_rate"] == 1.0
         assert ws["win_logloss"] == pytest.approx(round(-math.log(0.70), 4))
         assert sum(b["n"] for b in ws["calibration"]) == 2
+
+
+def test_zero_probability_winner_counted_the_same_in_both_evaluations() -> None:
+    """1着の車の予想確率が0でも、本体の評価と簡易評価で同じレースを数え、下限値で LogLoss を出す。"""
+    from autorace.scripts.quick_eval_v1 import win_summary
+
+    pred = pd.DataFrame([
+        {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "pred_prob": 1.0},
+        {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "pred_prob": 0.0},
+    ])
+    res = pd.DataFrame([
+        {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 1},
+        {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 2},
+    ])
+    ll, n = compute_win_logloss(pred, res)
+    quick = win_summary(pred, "pred_prob", res)
+    assert n == 1 and quick["races"] == 1
+    assert quick["win_logloss"] == pytest.approx(round(ll, 4))
+

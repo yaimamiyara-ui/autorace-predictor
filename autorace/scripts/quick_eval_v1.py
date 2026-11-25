@@ -44,8 +44,8 @@ def win_summary(pred: pd.DataFrame, prob_col: str, result: pd.DataFrame) -> dict
     """本命（確率1位）の勝率、勝った車に付けていた確率の平均、LogLoss、確率帯ごとの実際の勝率。
 
     1着同着は同着の車すべてを正解とし、レースごとの1着確率の合計で LogLoss・平均確率を出し、
-    確率1位の車が同着1着のどれかなら本命的中とする。1着の車が予想（prob > 0）に含まれない
-    レースは除外し、すべての指標で同じレース母数を使う。重複した (race, car_no) 予想行は
+    確率1位の車が同着1着のどれかなら本命的中とする。1着の車の予想行が無いレースは除外し
+    （確率0の予想行はあるものとして数え、LogLoss は下限値で計算する。本体の評価と同じ）、すべての指標で同じレース母数を使う。重複した (race, car_no) 予想行は
     ValueError で拒否する。
     """
     if pred.empty or result.empty:
@@ -54,7 +54,7 @@ def win_summary(pred: pd.DataFrame, prob_col: str, result: pd.DataFrame) -> dict
     win_df = winners(result)
     if win_df.empty:
         return {}
-    p_pos = pred[pred[prob_col] > 0][RACE_KEYS + ["car_no", prob_col]].copy()
+    p_pos = pred[pred[prob_col].notna()][RACE_KEYS + ["car_no", prob_col]].copy()
     if p_pos.empty:
         return {}
     win_hit = p_pos.merge(win_df, left_on=RACE_KEYS + ["car_no"], right_on=RACE_KEYS + ["win_car"], how="inner")
