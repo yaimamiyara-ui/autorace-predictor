@@ -12,7 +12,7 @@ import numpy as np
 import pandas as pd
 
 from autorace.model.combos import generate_rt3_combos
-from autorace.model.evaluate_v1 import evaluate_predictions
+from autorace.model.evaluate_v1 import _check_unique_predictions, evaluate_predictions
 from autorace.model.features import RACE_KEYS
 from autorace.model.features_v1 import build_features_v1
 from autorace.model.v0 import BaselineModelV0
@@ -33,19 +33,40 @@ def _norm(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def winners(result: pd.DataFrame) -> pd.DataFrame:
+    """結果から1着の車を取り出す。設計書どおり、1着同着のレースは同着の車すべてを1着として返す。"""
+    if result.empty:
+        return pd.DataFrame(columns=RACE_KEYS + ["win_car"])
     r = result[pd.to_numeric(result["order"], errors="coerce") == 1]
-    cnt = r.groupby(RACE_KEYS)["car_no"].transform("count")
-    return r[cnt == 1][RACE_KEYS + ["car_no"]].rename(columns={"car_no": "win_car"})
+    return r[RACE_KEYS + ["car_no"]].drop_duplicates().rename(columns={"car_no": "win_car"})
 
 
 def win_summary(pred: pd.DataFrame, prob_col: str, result: pd.DataFrame) -> dict:
-    """本命（確率1位）の勝率、勝った車に付けていた確率の平均、LogLoss、確率帯ごとの実際の勝率"""
-    p = pred[pred[prob_col] > 0][RACE_KEYS + ["car_no", prob_col]].merge(winners(result), on=RACE_KEYS)
-    if p.empty:
+    """本命（確率1位）の勝率、勝った車に付けていた確率の平均、LogLoss、確率帯ごとの実際の勝率。
+
+    1着同着は同着の車すべてを正解とし、レースごとの1着確率の合計で LogLoss・平均確率を出し、
+    確率1位の車が同着1着のどれかなら本命的中とする。1着の車が予想（prob > 0）に含まれない
+    レースは除外し、すべての指標で同じレース母数を使う。重複した (race, car_no) 予想行は
+    ValueError で拒否する。
+    """
+    if pred.empty or result.empty:
         return {}
-    p["is_win"] = (p["car_no"] == p["win_car"]).astype(float)
-    top = p.sort_values(RACE_KEYS + [prob_col], ascending=[True, True, True, False]).drop_duplicates(RACE_KEYS)
-    wp = p[p["is_win"] == 1][prob_col].clip(1e-15, 1)
+    _check_unique_predictions(pred, "car_no")
+    win_df = winners(result)
+    if win_df.empty:
+        return {}
+    p_pos = pred[pred[prob_col] > 0][RACE_KEYS + ["car_no", prob_col]].copy()
+    if p_pos.empty:
+        return {}
+    win_hit = p_pos.merge(win_df, left_on=RACE_KEYS + ["car_no"], right_on=RACE_KEYS + ["win_car"], how="inner")
+    if win_hit.empty:
+        return {}
+    eval_races = win_hit[RACE_KEYS].drop_duplicates()
+    p = p_pos.merge(eval_races, on=RACE_KEYS, how="inner").merge(
+        win_df.assign(is_win=1.0), left_on=RACE_KEYS + ["car_no"], right_on=RACE_KEYS + ["win_car"], how="left"
+    )
+    p["is_win"] = p["is_win"].fillna(0.0)
+    top = p.sort_values(RACE_KEYS + [prob_col, "car_no"], ascending=[True, True, True, False, True]).drop_duplicates(RACE_KEYS)
+    wp = p[p["is_win"] == 1.0].groupby(RACE_KEYS, sort=False)[prob_col].sum().clip(1e-15, 1.0)
     p["bin"] = pd.cut(p[prob_col], WIN_BINS, labels=WIN_LABELS, right=False)
     cal = p.groupby("bin", observed=False).agg(n=("is_win", "size"), pred=(prob_col, "mean"), actual=("is_win", "mean"))
     return {
@@ -60,12 +81,26 @@ def win_summary(pred: pd.DataFrame, prob_col: str, result: pd.DataFrame) -> dict
 
 
 def rt3_topn(rt3: pd.DataFrame, result: pd.DataFrame, ns=(1, 5, 10, 20)) -> dict:
+    """3連単の top-N 的中率と当たり目の順位中央値。
+
+    当たり目が予想に1つも含まれないレースは除外し、LogLoss・確率1位的中率・ECE と同じ
+    レース母数で集計する。同じレースに同じ組（combo）の予想が重複している場合は ValueError を送出する。
+    """
+    if not rt3.empty:
+        _check_unique_predictions(rt3, "combo")
     act = actual_rt3(result).rename(columns={"combo": "act"})
-    r = rt3.sort_values(RACE_KEYS + ["combo_prob"], ascending=[True, True, True, False]).copy()
+    if rt3.empty or act.empty:
+        out = {"races": 0}
+        for n in ns:
+            out[f"top{n}_hit_rate"] = None
+        out["median_rank_of_actual"] = None
+        return out
+    r = rt3.sort_values(RACE_KEYS + ["combo_prob", "combo"], ascending=[True, True, True, False, True]).copy()
     r["rank"] = r.groupby(RACE_KEYS).cumcount() + 1
     m = r.merge(act, on=RACE_KEYS)
-    hit_rank = m[m["combo"] == m["act"]].set_index(RACE_KEYS)["rank"]
-    n_races = act.merge(r[RACE_KEYS].drop_duplicates(), on=RACE_KEYS).shape[0]
+    # 同着で当たり目が複数あるレースは、いちばん上位の当たり目の順位を使う
+    hit_rank = m[m["combo"] == m["act"]].groupby(RACE_KEYS)["rank"].min()
+    n_races = len(hit_rank)
     out = {"races": int(n_races)}
     for n in ns:
         out[f"top{n}_hit_rate"] = round(float((hit_rank <= n).sum() / n_races), 4) if n_races else None

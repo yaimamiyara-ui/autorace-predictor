@@ -17,8 +17,11 @@ from autorace.common.odds import (
 )
 from autorace.common.schema import (
     HoldInfo,
+    OddsEntry,
+    OddsPlayerEntry,
     ProgramEntry,
     RaceInfoEntry,
+    RefundEntry,
     ResultEntry,
     _empty_to_none,
     _to_bool_or_none,
@@ -181,6 +184,142 @@ class TestOddsAndRefundParsingHelpers:
         assert by_bt["rt3"].popularity == 12
         assert by_bt["rfw"].combo == "2-5"
         assert by_bt["rfw"].payout == 680
+
+    def test_parse_odds_and_refund_single_schema_definitions(self) -> None:
+        import inspect
+        import autorace.common.schema as schema_mod
+
+        src = inspect.getsource(schema_mod)
+        assert src.count("class OddsEntry(") == 1
+        assert src.count("class OddsPlayerEntry(") == 1
+        assert src.count("class RefundEntry(") == 1
+
+        odds_body = {
+            "tnsOddsList": {"1": "2.4", "2": "3.8"},
+            "fnsOddsList": {"1": {"min": "1.1", "max": "1.5"}},
+            "widOddsList": {"2": {"1": ["2.2", "1.4"]}},
+            "rt3OddsList": {"1": {"2": {"3": "15.6"}}},
+            "playerList": [
+                {
+                    "carNo": "1",
+                    "playerCode": "9001",
+                    "placeCode": 2,
+                    "handicap": "10",
+                    "trialTime": "3.30",
+                    "trialRetryCode": 0,
+                    "absent": "-",
+                    "raceDev": "0.05",
+                    "stAve": "0.13",
+                    "goodTrackTraialAve": "3.31",
+                    "goodTrackRaceAve": "3.39",
+                    "goodTrackRaceBest": "3.35",
+                    "goodTrackRaceBestPlace": 2,
+                    "sunnyExpectCode": 1,
+                    "rainExpectCode": "",
+                    "stExpectCode": "2",
+                    "aiExpectCode": "---",
+                }
+            ],
+        }
+        odds, players, unknown = parse_odds_body(6, "2026-11-01", 5, odds_body, snapshot="pre")
+        assert unknown == {}
+        assert all(isinstance(o, OddsEntry) for o in odds)
+        by_key = {(o.bet_type, o.combo): o for o in odds}
+        assert by_key[("tns", "1")].model_dump() == {
+            "place_code": 6,
+            "race_date": "2026-11-01",
+            "race_no": 5,
+            "bet_type": "tns",
+            "combo": "1",
+            "odds": 2.4,
+            "odds_max": None,
+            "snapshot": "pre",
+        }
+        assert by_key[("fns", "1")].odds == 1.1
+        assert by_key[("fns", "1")].odds_max == 1.5
+        assert by_key[("wid", "1-2")].odds == 1.4
+        assert by_key[("wid", "1-2")].odds_max == 2.2
+        assert by_key[("rt3", "1-2-3")].odds == 15.6
+
+        assert len(players) == 1
+        assert isinstance(players[0], OddsPlayerEntry)
+        assert players[0].model_dump() == {
+            "place_code": 6,
+            "race_date": "2026-11-01",
+            "race_no": 5,
+            "player_code": 9001,
+            "car_no": 1,
+            "handicap": 10.0,
+            "trial_time": 3.30,
+            "trial_retry_code": "0",
+            "absent": None,
+            "race_dev": 0.05,
+            "st_ave": 0.13,
+            "good_track_trial_ave": 3.31,
+            "good_track_race_ave": 3.39,
+            "good_track_race_best": 3.35,
+            "good_track_race_best_place": "2",
+            "sunny_expect_code": "1",
+            "rain_expect_code": None,
+            "st_expect_code": "2",
+            "ai_expect_code": None,
+        }
+
+        refund_body = [
+            {
+                "raceNo": 5,
+                "refundInfo": {
+                    "rt3": {
+                        "typeCode": 0,
+                        "typeName": "通常",
+                        "list": [{"1thCarNo": 1, "2thCarNo": 2, "3thCarNo": 3, "refund": 1560, "pop": 4}],
+                    },
+                    "wid": {
+                        "typeCode": 0,
+                        "typeName": "通常",
+                        "list": [
+                            {"1thCarNo": 2, "2thCarNo": 1, "refund": 140, "pop": 1},
+                            {"1thCarNo": 3, "2thCarNo": 1, "refund": 290, "pop": 5},
+                        ],
+                    },
+                },
+            }
+        ]
+        refunds, raw = parse_refund_body(6, "2026-11-01", refund_body)
+        assert raw == []
+        assert all(isinstance(r, RefundEntry) for r in refunds)
+        assert [r.model_dump() for r in refunds] == [
+            {
+                "place_code": 6,
+                "race_date": "2026-11-01",
+                "race_no": 5,
+                "bet_type": "rt3",
+                "slot": 1,
+                "combo": "1-2-3",
+                "payout": 1560,
+                "popularity": 4,
+            },
+            {
+                "place_code": 6,
+                "race_date": "2026-11-01",
+                "race_no": 5,
+                "bet_type": "wid",
+                "slot": 1,
+                "combo": "1-2",
+                "payout": 140,
+                "popularity": 1,
+            },
+            {
+                "place_code": 6,
+                "race_date": "2026-11-01",
+                "race_no": 5,
+                "bet_type": "wid",
+                "slot": 2,
+                "combo": "1-3",
+                "payout": 290,
+                "popularity": 5,
+            },
+        ]
 
 
 class TestLiveRecordAndBackfillHelpers:
