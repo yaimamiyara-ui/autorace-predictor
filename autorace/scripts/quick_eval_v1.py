@@ -64,8 +64,9 @@ def rt3_topn(rt3: pd.DataFrame, result: pd.DataFrame, ns=(1, 5, 10, 20)) -> dict
     r = rt3.sort_values(RACE_KEYS + ["combo_prob"], ascending=[True, True, True, False]).copy()
     r["rank"] = r.groupby(RACE_KEYS).cumcount() + 1
     m = r.merge(act, on=RACE_KEYS)
-    hit_rank = m[m["combo"] == m["act"]].set_index(RACE_KEYS)["rank"]
-    n_races = act.merge(r[RACE_KEYS].drop_duplicates(), on=RACE_KEYS).shape[0]
+    # 同着で当たり目が複数あるレースは、いちばん上位の当たり目の順位を使う
+    hit_rank = m[m["combo"] == m["act"]].groupby(RACE_KEYS)["rank"].min()
+    n_races = act[RACE_KEYS].drop_duplicates().merge(r[RACE_KEYS].drop_duplicates(), on=RACE_KEYS).shape[0]
     out = {"races": int(n_races)}
     for n in ns:
         out[f"top{n}_hit_rate"] = round(float((hit_rank <= n).sum() / n_races), 4) if n_races else None

@@ -29,13 +29,14 @@ class TestEvaluateV1:
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "pred_prob": 0.5},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "pred_prob": 0.5},
         ])
-        # Dead heat (two order==1 in the same race) should be excluded
+        # 設計書どおり、1着同着は同着の選手すべてを1着として扱い、確率の合計で評価する
         dead_heat_res = pd.DataFrame([
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 1},
         ])
         ll_dh, n_dh = compute_win_logloss(pred, dead_heat_res)
-        assert math.isnan(ll_dh) and n_dh == 0
+        assert n_dh == 1
+        assert ll_dh == pytest.approx(-math.log(0.5 + 0.5))
 
     def test_compute_win_logloss_normal_and_zero_prob_clip(self) -> None:
         pred = pd.DataFrame([
@@ -271,7 +272,8 @@ class TestCombosAndV1PureHelpers:
         assert ev["no_accident_races"]["binary_logloss"] is None
 
     def test_actual_rt3_dead_heat_is_row_order_independent(self) -> None:
-        # Dead heat for 1st place between car 1 and car 4 -> excluded
+        # 設計書どおり、同着の選手はどちらもその着順として扱う：当たり目は複数になる
+        # 1着同着（1号車・4号車）。次の車を「2着」と数える記録
         res_order_a = pd.DataFrame([
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 4, "order": 1},
@@ -281,10 +283,16 @@ class TestCombosAndV1PureHelpers:
         res_order_b = res_order_a.iloc[[1, 0, 2, 3]].reset_index(drop=True)
         out_a = actual_rt3(res_order_a)
         out_b = actual_rt3(res_order_b)
-        assert out_a.empty and out_b.empty
+        assert list(out_a["combo"]) == ["1-4-2", "4-1-2"]
         assert list(out_a["combo"]) == list(out_b["combo"])
 
-        # Mixed dataset: Race 1 has dead heat for 3rd place (excluded), Race 2 is clean (kept)
+        # 同じ1着同着を、次の車を「3着」と数える記録で表しても同じ結果になる
+        res_skip = res_order_a.copy()
+        res_skip.loc[res_skip["car_no"] == 2, "order"] = 3
+        res_skip.loc[res_skip["car_no"] == 3, "order"] = 4
+        assert list(actual_rt3(res_skip)["combo"]) == ["1-4-2", "4-1-2"]
+
+        # レース1は3着同着（3号車・4号車）で当たり目2つ、レース2は通常で1つ
         mixed = pd.DataFrame([
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 2},
@@ -295,6 +303,26 @@ class TestCombosAndV1PureHelpers:
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 1, "order": 3},
         ])
         out_mixed = actual_rt3(mixed)
-        assert len(out_mixed) == 1
-        assert out_mixed.iloc[0]["race_no"] == 2
-        assert out_mixed.iloc[0]["combo"] == "5-2-1"
+        got = sorted(zip(out_mixed["race_no"].astype(int), out_mixed["combo"]))
+        assert got == [(1, "1-2-3"), (1, "1-2-4"), (2, "5-2-1")]
+
+    def test_dead_heat_counts_every_winning_combo_in_rt3_metrics(self) -> None:
+        # 3着同着のレース：当たり目は 1-2-3 と 1-2-4。確率の合計で LogLoss、1位の組がどちらかなら的中
+        res = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 2},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 3, "order": 3},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 4, "order": 3},
+        ])
+        pred = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "combo": "1-2-4", "combo_prob": 0.30},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "combo": "1-2-3", "combo_prob": 0.20},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "combo": "2-1-3", "combo_prob": 0.50},
+        ])
+        ll, hit, n = compute_rt3_logloss_and_hit(pred, res)
+        assert n == 1
+        assert ll == pytest.approx(-math.log(0.30 + 0.20))
+        assert hit == 0.0  # 1位の組 2-1-3 は当たり目ではない
+        pred.loc[pred["combo"] == "2-1-3", "combo_prob"] = 0.10
+        _, hit2, _ = compute_rt3_logloss_and_hit(pred, res)
+        assert hit2 == 1.0  # 1位の組 1-2-4 は当たり目の1つ

@@ -102,7 +102,10 @@ def settle_recommendations(recs_df, result_df, refund_df, final_odds_df) -> pd.D
     else:
         fin = pd.DataFrame(columns=RACE_KEYS + ["combo", "final_odds"])
 
-    s = recs.merge(act, on=RACE_KEYS, how="left").merge(ref, on=RACE_KEYS + ["combo"], how="left").merge(fin, on=RACE_KEYS + ["combo"], how="left")
+    # 同着で当たり目が複数あるレースでも推奨の行が増えないよう、当たり目の集合で判定する
+    act_hit = act.rename(columns={"actual_combo": "combo"}).drop_duplicates()
+    act_hit["actual_combo"] = act_hit["combo"]
+    s = recs.merge(act_hit, on=RACE_KEYS + ["combo"], how="left").merge(ref, on=RACE_KEYS + ["combo"], how="left").merge(fin, on=RACE_KEYS + ["combo"], how="left")
     s["final_odds"] = pd.to_numeric(s["final_odds"], errors="coerce")
     s["payout"] = pd.to_numeric(s["payout"], errors="coerce")
     s["odds_change_rate"] = np.where((s["pre_odds"] > 0) & s["final_odds"].notna(), (s["final_odds"] - s["pre_odds"]) / s["pre_odds"], np.nan)

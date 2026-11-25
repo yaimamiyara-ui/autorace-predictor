@@ -49,26 +49,52 @@ def load_parquet_table(data_dir: Path, table_name: str, end_date: str, start_dat
 
 
 def actual_rt3(result_df: pd.DataFrame) -> pd.DataFrame:
-    """結果から各レースの実際の1-2-3着（3連単の正解）を作る（1〜3着が各1台に決まるレースのみ）"""
+    """結果から各レースの3連単の当たり目を作る。
+
+    設計書どおり、同着の選手はどちらもその着順として扱う。同着があるレースは当たり目が
+    複数行になる（例：1着同着 A・B、3着 C → A-B-C と B-A-C）。行の並び順には依存しない。
+    1〜3着に入る組み合わせが作れないレース（事故で3台そろわない等）は含めない。
+    """
+    from itertools import permutations
+
+    cols = RACE_KEYS + ["combo"]
     if result_df is None or result_df.empty:
-        return pd.DataFrame(columns=RACE_KEYS + ["combo"])
+        return pd.DataFrame(columns=cols)
     r = result_df.copy()
     r["order_num"] = pd.to_numeric(r.get("order"), errors="coerce")
     r = r[r["order_num"].isin([1, 2, 3])].copy()
     if r.empty:
-        return pd.DataFrame(columns=RACE_KEYS + ["combo"])
-    r["order"] = r["order_num"].astype(int)
-    pos_cnt = r.groupby(RACE_KEYS + ["order"], sort=False)["car_no"].transform("count")
-    race_top3_cnt = r.groupby(RACE_KEYS, sort=False)["car_no"].transform("count")
-    r = r[(pos_cnt == 1) & (race_top3_cnt == 3)].copy()
-    if r.empty:
-        return pd.DataFrame(columns=RACE_KEYS + ["combo"])
-    piv = r.pivot_table(index=RACE_KEYS, columns="order", values="car_no", aggfunc="first")
-    piv = piv.dropna(subset=[c for c in (1, 2, 3) if c in piv.columns])
-    if not all(c in piv.columns for c in (1, 2, 3)):
-        return pd.DataFrame(columns=RACE_KEYS + ["combo"])
-    piv["combo"] = piv[1].astype(int).astype(str) + "-" + piv[2].astype(int).astype(str) + "-" + piv[3].astype(int).astype(str)
-    return piv.reset_index()[RACE_KEYS + ["combo"]]
+        return pd.DataFrame(columns=cols)
+    r["order_num"] = r["order_num"].astype(int)
+    r["car_no"] = pd.to_numeric(r["car_no"], errors="coerce")
+    r = r.dropna(subset=["car_no"])
+    rows = []
+    for keys, g in r.groupby(RACE_KEYS, sort=True):
+        cars = sorted({(int(o), int(c)) for o, c in zip(g["order_num"], g["car_no"])})
+        if len({c for _, c in cars}) != len(cars):
+            continue  # 同じ車が複数の着順に出る壊れたデータは使わない
+        combos = set()
+        for seq in permutations(cars, 3):
+            orders = [o for o, _ in seq]
+            # 着順が前から順に並び、i 番目（1始まり）の車の着順が i 以下で、
+            # その車より上位の車がすべて前に並んでいれば、その位置を取れる
+            # （同着の次の着順を「3着」と数える記録でも「2着」と数える記録でも正しく扱える）
+            if orders != sorted(orders) or not all(o <= i + 1 for i, o in enumerate(orders)):
+                continue
+            ok = True
+            for i, (o, _) in enumerate(seq):
+                better = {c for oo, c in cars if oo < o}
+                if not better <= {c for _, c in seq[:i]}:
+                    ok = False
+                    break
+            if ok:
+                combos.add("-".join(str(c) for _, c in seq))
+        keys = keys if isinstance(keys, tuple) else (keys,)
+        for combo in sorted(combos):
+            rows.append(dict(zip(RACE_KEYS, keys), combo=combo))
+    if not rows:
+        return pd.DataFrame(columns=cols)
+    return pd.DataFrame(rows, columns=cols)
 
 
 def evaluate_ev_strategies(combos_df, odds_df, refund_df, result_df, thresholds, max_picks=5):
