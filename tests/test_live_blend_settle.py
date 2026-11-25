@@ -92,7 +92,9 @@ class TestLiveBlendSettle(unittest.TestCase):
         preds = pd.read_parquet(tr / "predictions" / "2026" / "2026-03.parquet")
         sums = preds.groupby(["place_code", "race_no"])["pred_prob"].sum().to_numpy()
         np.testing.assert_allclose(sums, 1.0, atol=1e-6)
-        self.assertIn("v1_blend", (tr / "dashboard.html").read_text(encoding="utf-8"))
+        page = (tr / "dashboard.html").read_text(encoding="utf-8")
+        self.assertIn("新（合成）", page)
+        self.assertNotIn("LogLoss", page)
 
     def test_settle_falls_back_to_v0_without_live_model(self) -> None:
         d = Path(self.tmp) / "nolive"

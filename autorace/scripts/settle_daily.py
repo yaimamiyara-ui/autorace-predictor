@@ -199,6 +199,10 @@ def _calibration_svg(pred: pd.DataFrame) -> str:
     return "".join(parts)
 
 
+# 成績表の「予想」列に出す名前（記録上の名前 → 画面の表記）
+MODEL_LABELS = {"v0": "旧（基本）", "v1_blend": "新（合成）"}
+
+
 def generate_dashboard_html(tracker_dir: Path) -> Path:
     summary = pd.read_parquet(tracker_dir / "daily_summary.parquet") if (tracker_dir / "daily_summary.parquet").exists() else pd.DataFrame()
     recs = _load_all(tracker_dir / "recommendations")
@@ -214,7 +218,7 @@ def generate_dashboard_html(tracker_dir: Path) -> Path:
     for _, r in summary.sort_values("race_date", ascending=False).head(30).iterrows():
         ll = "" if pd.isna(r["log_loss"]) else f"{r['log_loss']:.3f}"
         mdl = r.get("model") if isinstance(r.get("model"), str) and r.get("model") else "v0"
-        rows.append(tr([r["race_date"], mdl, int(r["num_races"]), ll, int(r["num_recs"]), int(r["num_hits"]), f"{r['roi']:.0%}" if r["num_recs"] else "-"]))
+        rows.append(tr([r["race_date"], MODEL_LABELS.get(mdl, mdl), int(r["num_races"]), ll, int(r["num_recs"]), int(r["num_hits"]), f"{r['roi']:.0%}" if r["num_recs"] else "-"]))
     place_rows = []
     if n_rec:
         for pc, g in recs.groupby("place_code"):
@@ -227,9 +231,10 @@ td:first-child,th:first-child{{text-align:left}}.k{{display:inline-block;margin:
 <h1>オートレース予想 答え合わせ</h1><p>推奨は記録のみ（購入していません）。1点100円で買ったと仮定した成績です。</p>
 <div class="k">累計の推奨<b>{n_rec}点</b></div><div class="k">的中<b>{hits}点</b></div><div class="k">回収率<b>{roi:.0%}</b></div>
 <div class="k">推奨時→確定のオッズ変化<b>{(chg.median() if len(chg) else 0):+.0%}</b></div>
-<h2>日別</h2><table><tr><th>日付</th><th>予想</th><th>レース</th><th>LogLoss</th><th>推奨</th><th>的中</th><th>回収率</th></tr>{''.join(rows)}</table>
+<h2>日別</h2><table><tr><th>日付</th><th>予想</th><th>レース</th><th>外れ具合</th><th>推奨</th><th>的中</th><th>回収率</th></tr>{''.join(rows)}</table>
 <h2>場別</h2><table><tr><th>場</th><th>推奨</th><th>的中</th><th>回収率</th></tr>{''.join(place_rows)}</table>
 <h2>確率の正確さ（20区間）</h2>{_calibration_svg(preds)}
+<p style="color:#666;font-size:13px">予想：新（合成）＝予想と市場のオッズを合わせたもの、旧（基本）＝前からの簡単な予想。外れ具合は小さいほど確率が正確です。</p>
 <p style="color:#888;font-size:12px">更新：{datetime.now(JST):%Y-%m-%d %H:%M}</p></body></html>"""
     out = tracker_dir / "dashboard.html"
     out.write_text(page, encoding="utf-8")
