@@ -49,9 +49,20 @@ def load_parquet_table(data_dir: Path, table_name: str, end_date: str, start_dat
 
 
 def actual_rt3(result_df: pd.DataFrame) -> pd.DataFrame:
-    """結果から各レースの実際の1-2-3着（3連単の正解）を作る"""
-    r = result_df[result_df["order"].isin([1, 2, 3])].copy()
-    r["order"] = r["order"].astype(int)
+    """結果から各レースの実際の1-2-3着（3連単の正解）を作る（1〜3着が各1台に決まるレースのみ）"""
+    if result_df is None or result_df.empty:
+        return pd.DataFrame(columns=RACE_KEYS + ["combo"])
+    r = result_df.copy()
+    r["order_num"] = pd.to_numeric(r.get("order"), errors="coerce")
+    r = r[r["order_num"].isin([1, 2, 3])].copy()
+    if r.empty:
+        return pd.DataFrame(columns=RACE_KEYS + ["combo"])
+    r["order"] = r["order_num"].astype(int)
+    pos_cnt = r.groupby(RACE_KEYS + ["order"], sort=False)["car_no"].transform("count")
+    race_top3_cnt = r.groupby(RACE_KEYS, sort=False)["car_no"].transform("count")
+    r = r[(pos_cnt == 1) & (race_top3_cnt == 3)].copy()
+    if r.empty:
+        return pd.DataFrame(columns=RACE_KEYS + ["combo"])
     piv = r.pivot_table(index=RACE_KEYS, columns="order", values="car_no", aggfunc="first")
     piv = piv.dropna(subset=[c for c in (1, 2, 3) if c in piv.columns])
     if not all(c in piv.columns for c in (1, 2, 3)):

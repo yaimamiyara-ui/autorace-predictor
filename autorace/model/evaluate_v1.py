@@ -49,7 +49,7 @@ def compute_rt3_logloss_and_hit(rt3_pred_df: pd.DataFrame, race_result: pd.DataF
     sorted_pred = rt3_pred_df.sort_values(RACE_KEYS + ["combo_prob", "combo"], ascending=[True, True, True, False, True])
     top1 = (sorted_pred.drop_duplicates(subset=RACE_KEYS, keep="first")[RACE_KEYS + ["combo"]]
             .rename(columns={"combo": "top1_combo"}))
-    top1_eval = act.merge(top1, on=RACE_KEYS, how="inner")
+    top1_eval = merged_hit[RACE_KEYS + ["actual_combo"]].drop_duplicates(subset=RACE_KEYS).merge(top1, on=RACE_KEYS, how="inner")
     top1_hit_rate = float(np.mean(top1_eval["actual_combo"] == top1_eval["top1_combo"]))
     return rt3_ll, top1_hit_rate, int(len(merged_hit))
 

@@ -12,6 +12,76 @@ CATEGORICAL_COLS: list[str] = [
     "race_type_code",
 ]
 
+ALLOWED_INFO_COLS: list[str] = [
+    "distance",
+    "situation_code",
+    "temp",
+    "humid",
+    "road_temp",
+    "weather",
+    "grade_code",
+    "paragraph_day",
+    "period_start_date",
+    "race_name",
+    "final_race_no",
+]
+
+V0_OUTPUT_COLS: list[str] = [
+    "is_absent",
+    "max_handicap_diff",
+    "is_all_same_handicap",
+    "same_handicap_inner_order",
+    "same_handicap_count",
+    "trial_rank_in_race",
+    "trial_diff_from_mean",
+    "rank_score",
+    "rank_order_in_race",
+    "prior_win_rate",
+    "prior_top3_rate",
+    "prior_races",
+]
+
+V1_DEFAULT_INFO_COLS: list[str] = [
+    "distance",
+    "situation_code",
+    "road_temp",
+    "grade_code",
+    "paragraph_day",
+    "race_name",
+    "period_start_date",
+]
+
+V1_COMPUTED_COLS: list[str] = [
+    "prior_time_gap_10",
+    "prior_st_10",
+    "wet_order_diff",
+    "prior_wet_races",
+    "exp_time",
+    "exp_time_adj",
+    "diff_exp_time_raw",
+    "diff_exp_time_adj",
+    "race_min_trial_time",
+    "diff_trial_from_best",
+    "is_retrial",
+    "num_cars_ahead",
+    "wall_slow_cars_ahead",
+    "wall_best_trial_diff_ahead",
+    "rel_inner_order",
+    "effective_start_pos",
+    "diff_effective_start_pos",
+    "effective_start_order",
+    "race_max_handicap_span",
+    "rel_handicap",
+    "road_temp_clean",
+    "road_temp_x_handicap",
+    "is_non_good_track",
+    "meeting_prior_races",
+    "meeting_prior_avg_order",
+    "meeting_trial_diff",
+    "race_type_code",
+    "active_car_count",
+]
+
 FEATURE_COLS: list[str] = [
     # 既存v0特徴量
     "max_handicap_diff",
@@ -277,11 +347,31 @@ def build_features_v1(
 ) -> pd.DataFrame:
     """v0 の build_features の上に v1 用の特徴量を追加する。1行＝1出走（欠車は is_absent=True で残す）。
     race_info の race_* 系（レース時の値）は使わない。"""
+    if program.empty:
+        cols: list[str] = list(program.columns)
+        def _add_cols(candidates: list[str]) -> None:
+            for c in candidates:
+                if c not in cols:
+                    cols.append(c)
+        _add_cols(RACE_KEYS)
+        _add_cols(V0_OUTPUT_COLS)
+        if race_info is not None and not race_info.empty:
+            avail_info = [c for c in ALLOWED_INFO_COLS if c in race_info.columns]
+            cols = [c for c in cols if c not in avail_info]
+            _add_cols(avail_info)
+        _add_cols(V1_DEFAULT_INFO_COLS)
+        _add_cols(V1_COMPUTED_COLS)
+        _add_cols(FEATURE_COLS)
+        empty_df = pd.DataFrame(columns=cols)
+        for cat_col in CATEGORICAL_COLS:
+            if cat_col in empty_df.columns:
+                empty_df[cat_col] = empty_df[cat_col].astype(np.int32)
+        return empty_df
+
     df = _norm_keys(build_features(program, race_result_hist, window=window).copy())
 
     # 発走前に分かる race_info の列だけを結合
-    allowed_info_cols = ["distance", "situation_code", "temp", "humid", "road_temp", "weather", "grade_code",
-                         "paragraph_day", "period_start_date", "race_name", "final_race_no"]
+    allowed_info_cols = ALLOWED_INFO_COLS
     if race_info is not None and not race_info.empty:
         avail_cols = [c for c in allowed_info_cols if c in race_info.columns]
         info_clean = _norm_keys(race_info[RACE_KEYS + avail_cols].drop_duplicates(subset=RACE_KEYS).copy())

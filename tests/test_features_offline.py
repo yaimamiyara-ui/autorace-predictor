@@ -256,14 +256,18 @@ class TestFeaturesV1:
             assert r_col not in out_a.columns
         pd.testing.assert_frame_equal(out_a[FEATURE_COLS], out_b[FEATURE_COLS])
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=KeyError,
-        reason="build_features returns empty program without v0 columns (e.g. is_absent), causing KeyError in build_features_v1",
-    )
     def test_build_features_v1_empty_program_returns_empty_dataframe(self) -> None:
         empty_prog = pd.DataFrame(
             columns=["place_code", "race_date", "race_no", "car_no", "player_code", "handicap", "trial_run_time", "absent", "rank"]
         )
         out = build_features_v1(empty_prog, race_info=None, race_result_hist=None)
         assert out.empty
+        for col in FEATURE_COLS:
+            assert col in out.columns
+
+        non_empty_prog = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "player_code": 9001,
+             "handicap": 0, "trial_run_time": 3.32, "absent": None, "rank": "A-10"},
+        ])
+        non_empty_out = build_features_v1(non_empty_prog, race_info=None, race_result_hist=None)
+        assert list(out.columns) == list(non_empty_out.columns)

@@ -135,11 +135,6 @@ class TestEvaluateV1:
         expected_ece = (1 / 5) * 0.004 + (2 / 5) * 0.487 + (2 / 5) * 0.200
         assert ece == pytest.approx(expected_ece)
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="top1_hit_rate merges top1 with act on RACE_KEYS without filtering to merged_hit races",
-    )
     def test_compute_rt3_logloss_and_hit_missing_actual_combo_race_set_mismatch(self) -> None:
         # Race 1 has actual combo "1-2-3" in predictions (and it's top-1).
         # Race 2 has predictions (so top-1 exists), but actual combo "2-1-3" is missing from predictions.
@@ -161,6 +156,11 @@ class TestEvaluateV1:
         assert ll == pytest.approx(-math.log(0.7))
         # On the 1 evaluated race in merged_hit, top-1 hit rate should be 1.0, not 0.5
         assert hit_rate == pytest.approx(1.0)
+
+        # When every race lacks the actual combo, return (nan, nan, 0)
+        rt3_pred_no_hit = rt3_pred[rt3_pred["race_no"] == 2].copy()
+        ll_empty, hit_empty, n_empty = compute_rt3_logloss_and_hit(rt3_pred_no_hit, res)
+        assert math.isnan(ll_empty) and math.isnan(hit_empty) and n_empty == 0
 
 
 class TestCombosAndV1PureHelpers:
@@ -270,13 +270,8 @@ class TestCombosAndV1PureHelpers:
         assert ev["no_accident_races"]["num_races"] == 0
         assert ev["no_accident_races"]["binary_logloss"] is None
 
-    @pytest.mark.xfail(
-        strict=True,
-        raises=AssertionError,
-        reason="actual_rt3 uses pivot_table(..., aggfunc='first'), so dead heats depend on input row order",
-    )
     def test_actual_rt3_dead_heat_is_row_order_independent(self) -> None:
-        # Dead heat for 1st place between car 1 and car 4
+        # Dead heat for 1st place between car 1 and car 4 -> excluded
         res_order_a = pd.DataFrame([
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
             {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 4, "order": 1},
@@ -286,4 +281,20 @@ class TestCombosAndV1PureHelpers:
         res_order_b = res_order_a.iloc[[1, 0, 2, 3]].reset_index(drop=True)
         out_a = actual_rt3(res_order_a)
         out_b = actual_rt3(res_order_b)
+        assert out_a.empty and out_b.empty
         assert list(out_a["combo"]) == list(out_b["combo"])
+
+        # Mixed dataset: Race 1 has dead heat for 3rd place (excluded), Race 2 is clean (kept)
+        mixed = pd.DataFrame([
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 1, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 2, "order": 2},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 3, "order": 3},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 1, "car_no": 4, "order": 3},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 5, "order": 1},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 2, "order": 2},
+            {"place_code": 2, "race_date": "2026-11-01", "race_no": 2, "car_no": 1, "order": 3},
+        ])
+        out_mixed = actual_rt3(mixed)
+        assert len(out_mixed) == 1
+        assert out_mixed.iloc[0]["race_no"] == 2
+        assert out_mixed.iloc[0]["combo"] == "5-2-1"
